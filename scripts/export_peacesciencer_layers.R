@@ -2,106 +2,121 @@
 
 suppressPackageStartupMessages({
   library(dplyr)
-  library(tidyr)
   library(readr)
-  library(geosphere)
+  library(fixest)
 })
 
 if (!requireNamespace("peacesciencer", quietly = TRUE)) {
   stop("Install peacesciencer first: remotes::install_github('svmiller/peacesciencer')")
 }
 
-get_fn <- function(candidates) {
-  ns <- asNamespace("peacesciencer")
-  for (nm in candidates) {
-    if (exists(nm, envir = ns, mode = "function")) {
-      return(get(nm, envir = ns))
-    }
-  }
-  NULL
-}
-
-start_year <- 1945
+# -----------------------
+# Settings
+# -----------------------
+start_year <- 1900
 end_year <- as.integer(format(Sys.Date(), "%Y"))
 out_dir <- "data/processed"
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-# Base state-year/country table.
-create_stateyears_fn <- get_fn(c("create_stateyears", "create_stateyears_cs", "create_dyadyears"))
-if (is.null(create_stateyears_fn)) {
-  stop("Could not find a state-year constructor in peacesciencer; check package version.")
-}
+# -----------------------
+# Dyad-years (undirected)
+# -----------------------
+dy <- peacesciencer::create_dyadyears(system = "cow", directed = "undirected") %>%
+  filter(year >= start_year, year <= end_year)
 
-sy <- create_stateyears_fn() %>%
-  filter(year >= start_year, year <= end_year) %>%
-  distinct(ccode, statename, capital_lat, capital_long)
-
-nodes <- sy %>%
+# The peacesciencer dyad-years typically uses ccode1/ccode2 already.
+# We’ll keep them and export as "source_ccode/target_ccode" for consistency.
+dy <- dy %>%
   transmute(
-    ccode = as.integer(ccode),
-    state_name = statename,
-    cap_lat = capital_lat,
-    cap_lon = capital_long
-  ) %>%
-  distinct()
+    year = year,
+    ccode1 = as.integer(ccode1),
+    ccode2 = as.integer(ccode2)
+  ) %>% 
+  peacesciencer::add_capital_distance() %>% 
+  mutate(capdist = log(capdist))
 
-write_csv(nodes, file.path(out_dir, "nodes.csv"))
-
-# Build directed dyad-year grid for extracting ties.
-dy <- expand_grid(
-  year = start_year:end_year,
-  source_ccode = nodes$ccode,
-  target_ccode = nodes$ccode
-) %>%
-  filter(source_ccode != target_ccode)
-
-# Candidate helper wrappers to tolerate peacesciencer version differences.
-add_alliance_fn <- get_fn(c("add_alliance_data", "add_cow_alliance", "add_alliance"))
-add_igo_fn <- get_fn(c("add_igo_data", "add_s_igo", "add_igo"))
-add_trade_fn <- get_fn(c("add_trade_data", "add_cow_trade", "add_trade"))
-
-if (is.null(add_alliance_fn) || is.null(add_igo_fn) || is.null(add_trade_fn)) {
-  stop("Could not find one or more tie-construction functions (alliances/IGO/trade) in peacesciencer.")
-}
-
-# Alliance layer: offensive OR defensive alliance indicator.
-alliances <- dy %>%
-  rename(ccode1 = source_ccode, ccode2 = target_ccode) %>%
-  add_alliance_fn() %>%
+# -----------------------
+# Add alliance data
+# -----------------------
+dy_all <- dy %>%
+  peacesciencer::add_atop_alliance() %>%   # alliance vars include defense/offense indicators
   mutate(
-    tie = as.numeric((.data$defense == 1) | (.data$offense == 1)),
+    tie = as.numeric((atop_defense == 1) | (atop_offense == 1)),
     source_ccode = ccode1,
     target_ccode = ccode2
   ) %>%
-  select(year, source_ccode, target_ccode, tie)
+  select(year, source_ccode, target_ccode, tie, capdist) %>% 
+  filter(!is.na(tie))
 
-write_csv(alliances, file.path(out_dir, "layer_alliances_defensive_offensive.csv"))
 
-# Shared IGO layer (count of shared memberships; keep as weighted tie).
-igos <- dy %>%
-  rename(ccode1 = source_ccode, ccode2 = target_ccode) %>%
-  add_igo_fn() %>%
+alliance_model <- fixest::feols(tie ~ capdist | source_ccode + target_ccode + year, data = dy_all)
+dy_all_weighted <- dy_all %>%
   mutate(
-    tie = dplyr::coalesce(.data$igo_joint, .data$igo_shared, 0),
-    source_ccode = ccode1,
-    target_ccode = ccode2
+    tie = tie - predict(alliance_model)
   ) %>%
   select(year, source_ccode, target_ccode, tie)
 
-write_csv(igos, file.path(out_dir, "layer_igo_shared.csv"))
+dy_all <- dy_all %>%
+  select(year, source_ccode, target_ccode, tie)
 
-# Trade layer (flow values, log1p transformed).
-trade <- dy %>%
-  rename(ccode1 = source_ccode, ccode2 = target_ccode) %>%
-  add_trade_fn() %>%
+write_csv(dy_all, file.path(out_dir, "layer_alliances_defensive_offensive_undirected.csv"))
+write_csv(dy_all_weighted, file.path(out_dir, "layer_alliances_defensive_offensive_undirected_weighted.csv"))
+
+# -----------------------
+# Add IGO data (shared)
+# -----------------------
+dy_igo <- dy %>%
+  peacesciencer::add_igos() %>%        # typically creates igo_joint (or similar)
   mutate(
-    raw_trade = dplyr::coalesce(.data$trade, .data$flow1, .data$flow2, 0),
-    tie = log1p(pmax(raw_trade, 0)),
+    tie = dyadigos,
     source_ccode = ccode1,
     target_ccode = ccode2
   ) %>%
+  select(year, source_ccode, target_ccode, tie, capdist) %>% 
+  filter(!is.na(tie))
+
+igo_model <- fixest::feols(tie ~ capdist | source_ccode + target_ccode + year, data = dy_igo)
+dy_igo_weighted <- dy_igo %>%
+  mutate(
+    tie = tie - predict(igo_model)
+  ) %>%
   select(year, source_ccode, target_ccode, tie)
 
-write_csv(trade, file.path(out_dir, "layer_trade.csv"))
+dy_igo <- dy_igo %>%
+  select(year, source_ccode, target_ccode, tie)
 
-message("Export complete in ", out_dir)
+write_csv(dy_igo, file.path(out_dir, "layer_igo_shared_undirected.csv"))
+write_csv(dy_igo_weighted, file.path(out_dir, "layer_igo_shared_undirected_weighted.csv"))
+
+# -----------------------
+# Add IGO data (shared)
+# -----------------------
+dy_trade <- dy %>%
+  peacesciencer::add_cow_trade() %>%        # typically creates igo_joint (or similar)
+  mutate(
+    tie = smoothflow1 + smoothflow2,
+    source_ccode = ccode1,
+    target_ccode = ccode2
+  ) %>%
+  select(year, source_ccode, target_ccode, tie, capdist) %>% 
+  filter(!is.na(tie))
+
+
+
+trade_model <- fixest::feols(tie ~ capdist | source_ccode + target_ccode + year, data = dy_trade)
+dy_trade_weighted <- dy_trade %>%
+  mutate(
+    tie = tie - predict(trade_model)
+  ) %>%
+  select(year, source_ccode, target_ccode, tie)
+
+dy_trade <- dy_trade %>%
+  select(year, source_ccode, target_ccode, tie)
+
+write_csv(dy_trade, file.path(out_dir, "layer_trade_undirected.csv"))
+write_csv(dy_trade_weighted, file.path(out_dir, "layer_trade_undirected_weighted.csv"))
+
+message("Done. Wrote alliance + IGO + trade layers to: ", out_dir)
+
+
+

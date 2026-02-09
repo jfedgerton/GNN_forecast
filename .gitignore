@@ -1,0 +1,14 @@
+# PyCharm
+.idea/
+*.iml
+
+# RStudio
+.Rproj.user/
+
+# Python
+__pycache__/
+*.pyc
+
+# venvs (just in case)
+.venv/
+venv/

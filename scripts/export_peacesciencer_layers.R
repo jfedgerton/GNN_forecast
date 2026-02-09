@@ -89,7 +89,7 @@ write_csv(dy_igo, file.path(out_dir, "layer_igo_shared_undirected.csv"))
 write_csv(dy_igo_weighted, file.path(out_dir, "layer_igo_shared_undirected_weighted.csv"))
 
 # -----------------------
-# Add IGO data (shared)
+# Add trade data (shared)
 # -----------------------
 dy_trade <- dy %>%
   peacesciencer::add_cow_trade() %>%        # typically creates igo_joint (or similar)

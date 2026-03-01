@@ -29,9 +29,11 @@ import torch
 from gnn_forecast.data_layer import CanonicalDataConfig, load_canonical_multiplex_data
 from gnn_forecast.interventions import (
     InterventionResult,
+    RandomDeletionResult,
     embeddedness_score,
     interventions_to_frame,
     simulate_edge_toggle,
+    simulate_random_multi_edge_deletion,
 )
 
 # ---------------------------------------------------------------
@@ -252,7 +254,86 @@ print()
 print(removal_df.to_string(index=False))
 
 # ---------------------------------------------------------------
-# 4. Summary tables: top edge changes per focal country
+# 4. Random multi-edge deletion simulations
+# ---------------------------------------------------------------
+print("\n\nRunning random multi-edge deletion simulations ...")
+print("  (k = 2..10 edges removed, 100 simulations each)")
+
+N_SIMS = 100
+K_VALUES = range(2, 11)
+
+random_deletion_rows: List[dict] = []
+
+for year in years:
+    year_edges = data.yearly_edges[year]
+    adj_all = build_adjacency(year_edges, num_nodes)
+    emb_all = adjacency_to_embeddings(adj_all)
+
+    for label, focal_cc in [("USA", USA_CCODE), ("China", CHN_CCODE)]:
+        focal_idx = ccode_to_idx[focal_cc]
+        degree = int((adj_all[focal_idx] > 0).sum())
+
+        if degree < 2:
+            print(f"  {label} year {year}: degree={degree}, skipping (need >= 2)")
+            continue
+
+        results = simulate_random_multi_edge_deletion(
+            adj=adj_all,
+            emb=emb_all,
+            focal_idx=focal_idx,
+            focal_ccode=focal_cc,
+            idx_to_ccode=idx_to_ccode,
+            k_values=K_VALUES,
+            n_sims=N_SIMS,
+            rng_seed=42,
+        )
+
+        for r in results:
+            # Look up partner names
+            partner_names = []
+            for pc in r.deleted_partner_ccodes:
+                match = data.nodes.loc[data.nodes["ccode"] == pc, "state_name"]
+                partner_names.append(match.values[0] if len(match) else str(pc))
+
+            random_deletion_rows.append({
+                "year": year,
+                "focal_country": label,
+                "focal_ccode": r.focal_ccode,
+                "k": r.k,
+                "sim_id": r.sim_id,
+                "deleted_partners": "; ".join(partner_names),
+                "deleted_ccodes": "; ".join(str(c) for c in r.deleted_partner_ccodes),
+                "embeddedness_baseline": round(r.embeddedness_baseline, 6),
+                "embeddedness_after": round(r.embeddedness_after, 6),
+                "embeddedness_delta": round(r.embeddedness_delta, 6),
+            })
+
+random_df = pd.DataFrame(random_deletion_rows)
+
+if random_df.empty:
+    print("  No simulations possible (focal nodes have degree < 2).")
+else:
+    random_path = OUT_DIR / "random_deletion_impacts.csv"
+    random_df.to_csv(random_path, index=False)
+    print(f"  Saved: {random_path}")
+
+    # Print summary statistics per (country, k)
+    summary = (
+        random_df.groupby(["focal_country", "year", "k"])["embeddedness_delta"]
+        .agg(["mean", "std", "min", "max", "count"])
+        .reset_index()
+    )
+    summary.columns = ["country", "year", "k", "mean_delta", "std_delta",
+                        "min_delta", "max_delta", "n_sims"]
+    summary_path = OUT_DIR / "random_deletion_summary.csv"
+    summary.to_csv(summary_path, index=False)
+    print(f"  Saved: {summary_path}")
+    print()
+    print(summary.to_string(index=False))
+
+
+# ---------------------------------------------------------------
+# 5. Summary tables: top edge changes per focal country
 # ---------------------------------------------------------------
 print("\n\n" + "=" * 60)
 print("SUMMARY: Top edge toggles by |embeddedness delta|")

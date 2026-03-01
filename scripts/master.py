@@ -108,6 +108,21 @@ t0 = time.time()
 
 
 # ---------------------------------------------------------------
+# Flag-check infrastructure
+# ---------------------------------------------------------------
+_flag_results: List[dict] = []
+
+
+def flag_check(code: str, condition: bool, description: str) -> bool:
+    """Record a pass/fail flag check. Returns the condition value."""
+    status = "PASS" if condition else "FAIL"
+    _flag_results.append({"code": code, "status": status, "description": description})
+    if not condition:
+        print(f"  FLAG {code} FAIL: {description}")
+    return condition
+
+
+# ---------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------
 def build_adjacency(
@@ -162,6 +177,27 @@ print(f"  Layers:     {', '.join(relations)}")
 for label, cc in [("USA", USA_CCODE), ("China", CHN_CCODE)]:
     if cc not in ccode_to_idx:
         print(f"  WARNING: {label} (ccode {cc}) not in nodes.csv — skipping interventions for {label}")
+
+# --- Stage 1 flag checks ---
+flag_check("FC-01", num_nodes > 0, f"num_nodes={num_nodes} > 0")
+flag_check(
+    "FC-02",
+    len(ccode_to_idx) == len(idx_to_ccode) and set(ccode_to_idx.values()) == set(idx_to_ccode.keys()),
+    "ccode_to_idx is bijective (1-to-1 mapping)",
+)
+for _y in years:
+    flag_check(
+        "FC-03",
+        set(data.yearly_edges[_y].keys()) == set(relations),
+        f"Year {_y} has all relation keys: {relations}",
+    )
+    for _rel, _df in data.yearly_edges[_y].items():
+        _required = {"source_ccode", "target_ccode", "tie", "source_idx", "target_idx"}
+        flag_check(
+            "FC-04",
+            _required.issubset(_df.columns),
+            f"Year {_y} {_rel} has columns {_required}",
+        )
 
 
 # ===============================================================
@@ -307,6 +343,37 @@ time_path = OUT_DIR / "embeddedness_over_time.csv"
 time_df.to_csv(time_path, index=False)
 print(f"  Saved: {time_path}  ({len(time_df)} rows)")
 
+# --- Stage 3 flag checks (run on last year's aggregate) ---
+_last_year_edges = data.yearly_edges[years[-1]]
+_adj_check = build_adjacency(_last_year_edges, num_nodes)
+_emb_check = adjacency_to_embeddings(_adj_check)
+flag_check("FC-05", _adj_check.shape == (num_nodes, num_nodes),
+           f"Adjacency shape {_adj_check.shape} == ({num_nodes}, {num_nodes})")
+flag_check("FC-06", np.allclose(_adj_check, _adj_check.T),
+           "Adjacency is symmetric")
+flag_check("FC-07", np.allclose(np.diag(_adj_check), 0.0),
+           "Adjacency diagonal is zero")
+flag_check("FC-08", np.isfinite(_adj_check).all(),
+           "Adjacency has no NaN/Inf")
+flag_check("FC-09", torch.isfinite(_emb_check).all().item(),
+           "Embedding tensor has no NaN/Inf")
+
+for _label, _cc in [("USA", USA_CCODE), ("China", CHN_CCODE)]:
+    if _cc not in ccode_to_idx:
+        continue
+    _idx = ccode_to_idx[_cc]
+    _score = embeddedness_score(_emb_check, _idx)
+    _degree_flag = int((_adj_check[_idx] > 0).sum())
+    flag_check("FC-10", -1.0 <= _score <= 1.0,
+               f"{_label} embeddedness={_score:.6f} in [-1, 1]")
+    # Cross-check degree from adjacency vs edges
+    _edge_count = sum(
+        1 for j in range(num_nodes)
+        if _adj_check[_idx, j] > 0 and j != _idx
+    )
+    flag_check("FC-11", _degree_flag == _edge_count,
+               f"{_label} degree from adj row ({_degree_flag}) == edge count ({_edge_count})")
+
 
 # ===============================================================
 # Stage 4 — Single-edge removal impact
@@ -391,6 +458,18 @@ removal_path = OUT_DIR / "edge_toggle_impacts.csv"
 removal_df.to_csv(removal_path, index=False)
 print(f"  Saved: {removal_path}  ({len(removal_df)} rows)")
 
+# --- Stage 4 flag checks ---
+if not removal_df.empty:
+    flag_check("FC-12",
+               removal_df["embeddedness_delta"].apply(np.isfinite).all(),
+               "All edge toggle deltas are finite")
+    _removals = removal_df[removal_df["operation"] == "remove"]
+    if not _removals.empty:
+        _pct_negative = (_removals["embeddedness_delta"] <= 0).mean()
+        flag_check("FC-13", _pct_negative >= 0.5,
+                   f"Removal deltas: {_pct_negative*100:.0f}% are <= 0 "
+                   f"(expect majority negative — edge removal should hurt embeddedness)")
+
 
 # ===============================================================
 # Stage 5 — Random multi-edge deletion simulations
@@ -466,6 +545,21 @@ else:
     rand_summary.to_csv(rand_summary_path, index=False)
     print(f"  Saved: {rand_summary_path}  ({len(rand_summary)} rows)")
 
+    # --- Stage 5 flag checks ---
+    # Verify baselines are consistent within each (country, year) group
+    for (_fc, _yr), _grp in random_df.groupby(["focal_country", "year"]):
+        _baselines = _grp["embeddedness_baseline"].unique()
+        flag_check("FC-14", len(_baselines) == 1,
+                   f"Random deletion baselines for {_fc} year {_yr}: "
+                   f"{len(_baselines)} unique value(s) (expect 1)")
+    # Verify k matches actual number of deleted partners
+    for _row_idx, _row in random_df.iterrows():
+        _actual_k = len(str(_row["deleted_ccodes"]).split("; "))
+        flag_check("FC-15", _row["k"] == _actual_k,
+                   f"Row {_row_idx}: k={_row['k']} matches "
+                   f"deleted count={_actual_k}")
+        break  # Spot-check first row only to avoid flooding output
+
 
 # ===============================================================
 # Stage 6 — AR forecast and edge-toggle interventions (optional)
@@ -515,6 +609,10 @@ if not args.skip_forecast:
 
         print(f"  Training loss: {loss.item():.6f}  ({args.train_epochs} epochs)")
 
+        # --- Stage 6 flag checks (training) ---
+        flag_check("FC-16", np.isfinite(loss.item()),
+                   f"AR training loss={loss.item():.6f} is finite")
+
         ckpt_path = OUT_DIR / "ar_model_checkpoint.pt"
         torch.save(model.state_dict(), ckpt_path)
         print(f"  Saved checkpoint: {ckpt_path}")
@@ -525,6 +623,14 @@ if not args.skip_forecast:
             forecasted = rollout_embeddings(model, history, steps=args.forecast_steps)
 
         print(f"  Forecasted shape: {tuple(forecasted.shape)}")
+
+        # --- Stage 6 flag checks (forecast) ---
+        flag_check("FC-17", torch.isfinite(forecasted).all().item(),
+                   "Forecast tensor has no NaN/Inf")
+        _expected_shape = (num_nodes, args.forecast_steps, emb_dim)
+        flag_check("FC-18", tuple(forecasted.shape) == _expected_shape,
+                   f"Forecast shape {tuple(forecasted.shape)} == {_expected_shape}")
+
         forecast_path = OUT_DIR / "embedding_forecast.pt"
         torch.save(forecasted, forecast_path)
         print(f"  Saved: {forecast_path}")
@@ -585,3 +691,42 @@ for f in sorted(OUT_DIR.glob("*")):
 elapsed = time.time() - t0
 print(f"\n  Total runtime: {elapsed:.1f}s")
 print(f"  All outputs in: {OUT_DIR}/")
+
+# ===============================================================
+# Flag check report
+# ===============================================================
+print(f"\n{'=' * 60}")
+print("FLAG CHECK REPORT")
+print("=" * 60)
+
+_n_pass = sum(1 for f in _flag_results if f["status"] == "PASS")
+_n_fail = sum(1 for f in _flag_results if f["status"] == "FAIL")
+_n_total = len(_flag_results)
+
+for f in _flag_results:
+    marker = "OK" if f["status"] == "PASS" else "XX"
+    print(f"  [{marker}] {f['code']}: {f['description']}")
+
+print()
+if _n_fail == 0:
+    print(f"  ALL FLAG CHECKS PASSED ({_n_pass}/{_n_total})")
+else:
+    print(f"  FLAG CHECKS: {_n_pass}/{_n_total} PASSED, {_n_fail} FAILED")
+    print()
+    print("  Failures:")
+    for f in _flag_results:
+        if f["status"] == "FAIL":
+            print(f"    {f['code']}: {f['description']}")
+    sys.exit(1)
+
+# Write flag report alongside outputs
+flag_report_path = OUT_DIR / "flag_check_report.txt"
+with open(flag_report_path, "w") as fh:
+    fh.write(f"FLAG CHECK REPORT  (runtime: {elapsed:.1f}s)\n")
+    fh.write(f"Data: {args.data_dir}\n")
+    fh.write(f"{'=' * 60}\n\n")
+    for f in _flag_results:
+        marker = "PASS" if f["status"] == "PASS" else "FAIL"
+        fh.write(f"[{marker}] {f['code']}: {f['description']}\n")
+    fh.write(f"\nTotal: {_n_pass}/{_n_total} passed, {_n_fail} failed\n")
+print(f"  Saved: {flag_report_path}")

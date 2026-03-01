@@ -1,0 +1,425 @@
+PIPELINE AUDIT READOUT
+=====================
+Generated for: GNN Forecast — Multiplex International System Forecasting
+Last verified against source: 2026-03-01
+
+
+====================================================================
+SECTION 1: MODULE-BY-MODULE SOURCE OF TRUTH
+====================================================================
+
+Each entry below documents EXACTLY what the code does, traced to
+specific source lines. Use this to verify any output claim.
+
+--------------------------------------------------------------------
+1.1  data_layer.py — Data Loading
+--------------------------------------------------------------------
+
+FILE: src/gnn_forecast/data_layer.py
+
+WHAT IT LOADS:
+  - nodes.csv  → country list with ccodes
+  - edges_alliance.csv, edges_igo.csv, edges_trade.csv → edge lists
+
+NODE INDEXING (line 47-50):
+  build_ccode_index() sorts unique ccodes ascending, then assigns
+  integer indices 0, 1, 2, ...
+  Example: {2: 0, 710: 1, 840: 2}  (USA=0, China=1, Example=2)
+
+  FLAG: This is DETERMINISTIC. Same input always gives same mapping.
+  FLAG: The index is NOT the ccode. ccode 2 -> index 0.
+
+EDGE LOADING (lines 67-87):
+  For each relation file, reads columns:
+    year, source_ccode, target_ccode, tie
+  All cast to int/float. No imputation. Missing columns -> ValueError.
+
+YEARLY EDGE ASSEMBLY (lines 90-124):
+  For each year, for each relation:
+    - Filters edges to that year
+    - Validates all ccodes exist in nodes.csv (raises ValueError if not)
+    - Adds source_idx, target_idx columns via ccode_to_idx mapping
+
+  FLAG: Unknown ccodes in edges that aren't in nodes.csv will CRASH,
+        not silently drop. This is intentional.
+
+WHAT COULD GO WRONG:
+  - If nodes.csv has duplicate ccodes, they are de-duplicated (line 64)
+  - If an edge file is missing, FileNotFoundError is raised
+  - Years with no edges for a relation get an empty DataFrame (valid)
+
+
+--------------------------------------------------------------------
+1.2  network_construction.py — Distance Residualization
+--------------------------------------------------------------------
+
+FILE: src/gnn_forecast/network_construction.py
+
+HAVERSINE (lines 10-15):
+  Standard great-circle distance in km. Uses Earth radius = 6371 km.
+  This is the real haversine formula, not an approximation.
+
+CAPITAL DISTANCE MATRIX (lines 18-28):
+  For every ordered pair (i, j) where i != j, computes haversine
+  distance using cap_lat, cap_lon columns from nodes.csv.
+  Returns DataFrame with columns: source_ccode, target_ccode,
+  capital_distance_km.
+
+  FLAG: This is O(N^2). For 200+ countries it computes ~40,000 pairs.
+  FLAG: Requires nodes.csv to have cap_lat and cap_lon columns.
+
+RESIDUALIZATION (lines 31-39):
+  residualize_ties_against_distance():
+    1. Left-joins edges with distance matrix on (source_ccode, target_ccode)
+    2. Runs OLS: tie ~ intercept + capital_distance_km
+    3. Adds pred_tie = predicted value, tie_resid = tie - pred_tie
+
+  FLAG: This is a SIMPLE LINEAR REGRESSION, not fixed effects.
+        The R script does fixed effects; this Python version is simpler.
+  FLAG: If the merge produces NaN distances (missing pair), the
+        regression will propagate NaN. Check your nodes.csv coordinates.
+
+
+--------------------------------------------------------------------
+1.3  interventions.py — Embeddedness & Edge Interventions
+--------------------------------------------------------------------
+
+FILE: src/gnn_forecast/interventions.py
+
+EMBEDDEDNESS SCORE (lines 30-36):
+  embeddedness_score(emb, idx):
+    1. Take row idx from embedding matrix
+    2. L2-normalize ALL rows (with epsilon 1e-8 for stability)
+    3. L2-normalize the focal row
+    4. Compute cosine similarity: all_norm @ v_norm
+    5. Return the MEAN cosine similarity across ALL nodes (including self)
+
+  FLAG: The score INCLUDES the self-similarity term (cos(v, v) = 1.0).
+        This inflates absolute scores but is consistent across comparisons.
+  FLAG: Score range is [-1, 1] in theory. In practice with non-negative
+        adjacency-based embeddings, it will be in [0, 1].
+  FLAG: This measures how "central" or "typical" a node's embedding is
+        relative to the whole system. It is NOT a standard network
+        centrality measure.
+
+EDGE TOGGLE (lines 39-73):
+  simulate_edge_toggle():
+    For each partner:
+    1. Copy adjacency matrix
+    2. If edge exists: zero it out (remove). If not: set to 1 (add).
+    3. Compute ONE-HOP message passing: emb2 = (adj2 @ emb) / degree
+    4. Compute embeddedness_score on the MODIFIED embedding
+    5. Delta = new_score - baseline_score
+
+  FLAG: The intervention modifies the ADJACENCY, then re-derives
+        embeddings via one-hop aggregation. It does NOT retrain any model.
+  FLAG: This is a PROXY for the true effect. The one-hop pass is a
+        simplified GNN step, not a full re-embedding.
+  FLAG: adj2 is symmetric — both (i,j) and (j,i) are toggled.
+
+RANDOM MULTI-EDGE DELETION (lines 80-136):
+  simulate_random_multi_edge_deletion():
+    For each k in k_values:
+      If focal node degree >= k:
+        For n_sims simulations:
+          1. Sample k neighbours uniformly without replacement
+          2. Zero out those edges (both directions)
+          3. One-hop message pass on modified adjacency
+          4. Record embeddedness delta
+
+  FLAG: Uses numpy RNG with explicit seed for reproducibility.
+  FLAG: k values that exceed the focal node's degree are SKIPPED, not
+        errored. This means output may have fewer rows than expected.
+
+
+--------------------------------------------------------------------
+1.4  forecast.py — Autoregressive Forecaster
+--------------------------------------------------------------------
+
+FILE: src/gnn_forecast/forecast.py
+
+MODEL ARCHITECTURE (lines 10-21):
+  EmbeddingAR:
+    - GRU: input_size=emb_dim, hidden_size=hidden_dim, batch_first=True
+    - Linear head: hidden_dim -> emb_dim
+    - Forward: takes [num_nodes, seq_len, emb_dim], returns [num_nodes, emb_dim]
+      (the prediction for the NEXT time step)
+
+  FLAG: This is a SHARED GRU across all nodes. Each node's sequence is
+        processed independently but with the same weights. There is NO
+        inter-node communication during forecasting.
+
+ROLLOUT (lines 37-48):
+  rollout_embeddings():
+    1. Clone history tensor
+    2. For each step: predict next embedding, append to sequence,
+       drop oldest time step (sliding window)
+    3. Return all predictions stacked: [num_nodes, steps, emb_dim]
+
+  FLAG: Autoregressive rollout compounds errors. By step 25, predictions
+        are far from reality. This is a SCENARIO PROJECTION, not a
+        point prediction (as noted in CLAUDE.md).
+  FLAG: The sliding window means the model always sees seq_len time
+        steps, regardless of how far into the future it is forecasting.
+
+DECODE EDGES (lines 24-27):
+  Inner product decoder: score = emb @ emb.T
+  Threshold at 0.0 to produce binary adjacency.
+
+  FLAG: This decoder assumes that similar embeddings = likely edge.
+        With row-normalised adjacency embeddings, this is reasonable
+        but not calibrated.
+
+
+--------------------------------------------------------------------
+1.5  master.py — Pipeline Orchestration
+--------------------------------------------------------------------
+
+FILE: scripts/master.py
+
+ADJACENCY CONSTRUCTION (lines 113-128):
+  build_adjacency():
+    - Iterates edge DataFrames, sets adj[i,j] = max(current, tie_weight)
+    - Symmetrizes: adj[j,i] = adj[i,j]
+    - Zeros diagonal
+    - If layer=None, aggregates ALL layers (max weight wins)
+
+  FLAG: The "max" aggregation means that if alliance=1 and trade=0.5
+        for the same pair, the aggregate weight is 1.0, not 1.5.
+        This is a design choice, not a bug.
+
+ADJACENCY-TO-EMBEDDING (lines 131-135):
+  adjacency_to_embeddings():
+    - Row-normalise adjacency: each row sums to 1.0 (or 0 if isolate)
+    - This is equivalent to a 1-hop mean-aggregation GNN with identity
+      features (each node's embedding = average of its neighbours'
+      adjacency rows)
+
+  FLAG: Isolate nodes (degree 0) get all-zero embeddings due to
+        clamp(min=1.0) preventing division by zero. Their embeddedness
+        score will be 0.0 (cosine with zero vector = 0).
+
+EMBEDDING HISTORY FOR FORECAST (lines 478-494):
+  For each year, build row-normalised adjacency as a "structural embedding".
+  If num_nodes > emb_dim: TRUNCATE to first emb_dim columns.
+  If num_nodes < emb_dim: ZERO-PAD to emb_dim columns.
+
+  FLAG: Truncation loses information about nodes with index >= emb_dim.
+        With full data (~200 countries), default emb_dim=8 means only
+        the first 8 columns of the row-normalised adjacency are kept.
+        This is a dimensionality reduction, not a principled embedding.
+
+
+====================================================================
+SECTION 2: DATA FLOW DIAGRAM
+====================================================================
+
+nodes.csv + edges_*.csv
+        |
+        v
+  load_canonical_multiplex_data()
+        |
+        v
+  CanonicalMultiplexData
+    .nodes (DataFrame)
+    .ccode_to_idx (dict)
+    .idx_to_ccode (dict)
+    .yearly_edges[year][relation] (DataFrame)
+        |
+        +---> build_adjacency() ---> np.ndarray (N x N)
+        |                                |
+        |                                v
+        |                     adjacency_to_embeddings()
+        |                                |
+        |                                v
+        |                     torch.Tensor (N x N or N x emb_dim)
+        |                                |
+        |         +-----------+----------+----------+
+        |         |           |          |          |
+        |         v           v          v          v
+        |   embeddedness   edge_toggle  random    AR forecast
+        |   _score()       simulate()   deletion  (GRU rollout)
+        |         |           |          |          |
+        |         v           v          v          v
+        |     float      InterventionResult  RandomDeletionResult
+        |                     |          |
+        v                     v          v
+  system_summary.csv   edge_toggle_impacts.csv
+  embeddedness_over_time.csv   random_deletion_impacts.csv
+                               random_deletion_summary.csv
+                               embedding_forecast.pt
+                               forecast_interventions_*.csv
+
+
+====================================================================
+SECTION 3: WHAT EACH OUTPUT FILE CONTAINS
+====================================================================
+
+FILE: system_summary.csv  (--summary only)
+  Columns: year, layer, n_nodes, n_active_nodes, n_edges, density,
+           mean_degree, median_degree, max_degree, isolates,
+           mean_weight, max_weight
+  One row per (year, layer) + one row per year for "aggregate".
+
+FILE: embeddedness_over_time.csv
+  Columns: year, country, ccode, layer, embeddedness, degree
+  One row per (year, country, layer) + aggregate.
+  Embeddedness = mean cosine similarity (see Section 1.3).
+
+FILE: edge_toggle_impacts.csv
+  Columns: year, focal_country, focal_ccode, partner, partner_ccode,
+           operation, embeddedness_delta
+  Sorted by |delta| descending.
+  Operation is "remove" (existing edge) or "add" (missing edge).
+
+FILE: random_deletion_impacts.csv
+  Columns: year, focal_country, focal_ccode, k, sim_id,
+           deleted_partners, deleted_ccodes, embeddedness_baseline,
+           embeddedness_after, embeddedness_delta
+  One row per simulation draw.
+
+FILE: random_deletion_summary.csv
+  Columns: country, year, k, mean_delta, std_delta, min_delta,
+           max_delta, n_sims
+  Aggregated statistics per (country, year, k).
+
+FILE: embedding_forecast.pt
+  PyTorch tensor shape: [num_nodes, forecast_steps, emb_dim]
+  Contains rolled-out embeddings for 2026-2050.
+
+FILE: forecast_interventions_{usa,china}.csv
+  Columns: focal_ccode, partner_ccode, operation, embeddedness_delta
+  Edge toggles applied to the FINAL forecasted embedding (year 2050).
+
+
+====================================================================
+SECTION 4: KNOWN LIMITATIONS & CAVEATS
+====================================================================
+
+1. EMBEDDEDNESS IS NOT STANDARD CENTRALITY
+   The embeddedness_score function computes mean cosine similarity of
+   a node's embedding to all other embeddings. This is a custom metric.
+   It correlates with degree but is not identical to betweenness,
+   eigenvector centrality, or any standard measure.
+
+2. ONE-HOP PROXY FOR INTERVENTIONS
+   Edge toggle interventions re-derive embeddings via a single
+   message-passing step (adj @ emb / degree). This is a first-order
+   approximation. In a real multi-layer GNN, removing an edge would
+   propagate through multiple hops.
+
+3. SELF-SIMILARITY INCLUDED IN EMBEDDEDNESS
+   The mean cosine similarity includes cos(v_i, v_i) = 1.0 for the
+   focal node. This is a constant offset that doesn't affect rankings
+   but inflates absolute scores.
+
+4. AGGREGATE ADJACENCY USES MAX, NOT SUM
+   When combining layers, the maximum tie weight across layers is used.
+   This means a country with alliance=1, igo=1, trade=1 gets the same
+   aggregate weight as one with alliance=1, igo=0, trade=0.
+
+5. AR FORECAST COMPOUNDS ERRORS
+   The GRU forecaster is autoregressive: each step feeds on its own
+   prediction. By step 25, the signal is largely the model's own
+   recurrent dynamics, not the original data. Treat 2026-2050
+   projections as scenario explorations.
+
+6. EMBEDDING TRUNCATION
+   When num_nodes > emb_dim (default 8), the row-normalised adjacency
+   is truncated to the first emb_dim columns. This is a lossy
+   projection. The "first 8 columns" correspond to the 8 nodes with
+   the lowest ccodes, which may not be the most informative.
+
+7. FIXTURE DATA IS TINY
+   The test fixtures have 3 countries and 2 years. All fixture results
+   should be verified against full peacesciencer data for any
+   substantive conclusions.
+
+8. DISTANCE RESIDUALIZATION DIFFERS FROM R SCRIPT
+   The Python residualization uses simple OLS (tie ~ intercept + distance).
+   The R script uses fixed-effects models controlling for node-level
+   effects. Results will differ.
+
+
+====================================================================
+SECTION 5: RUNTIME FLAG CHECKS IN master.py
+====================================================================
+
+The following checks run automatically during execution. Any failure
+prints a FAIL line and increments the error counter. The script
+continues past failures but reports a non-zero exit code at the end.
+
+CHECK   WHAT IT VERIFIES                           STAGE
+------  -----------------------------------------  -----
+FC-01   nodes.csv loaded, num_nodes > 0            1
+FC-02   ccode_to_idx is bijective (1-to-1)         1
+FC-03   Every year has all expected relation keys   1
+FC-04   Edge DataFrames have required columns       1
+FC-05   Adjacency is square (N x N)                3
+FC-06   Adjacency is symmetric                     3
+FC-07   Adjacency diagonal is zero                 3
+FC-08   Adjacency has no NaN/Inf                   3
+FC-09   Embedding tensor has no NaN/Inf            3
+FC-10   Embeddedness score in [-1, 1]              3
+FC-11   Embeddedness degree matches adj row count   3
+FC-12   Edge toggle delta is finite                4
+FC-13   Removal deltas are <= 0 (sanity)           4
+FC-14   Random deletion baseline is consistent     5
+FC-15   Random deletion k matches actual count     5
+FC-16   AR training loss is finite                 6
+FC-17   Forecast tensor has no NaN/Inf             6
+FC-18   Forecast tensor shape matches expectations 6
+
+If all checks pass, the final line reads:
+  ALL FLAG CHECKS PASSED (18/18)
+
+If any fail, the final line reads:
+  FLAG CHECKS: X/18 PASSED, Y FAILED
+  [list of failures]
+
+Use these flags to distinguish real results from pipeline errors.
+
+
+====================================================================
+SECTION 6: HOW TO VERIFY OUTPUTS ARE NOT HALLUCINATED
+====================================================================
+
+1. RUN WITH --summary AND CROSS-CHECK:
+   The system summary reports edge counts, density, and degree
+   distributions. These can be independently verified:
+     - Count rows in edges_*.csv for a given year
+     - Compare to n_edges in system_summary.csv
+     - density = n_edges / (N*(N-1)/2)
+
+2. SPOT-CHECK EMBEDDEDNESS VALUES:
+   For a specific (year, country, layer):
+     a. Build the adjacency matrix by hand from the CSV
+     b. Row-normalise it
+     c. Compute cosine similarity of the focal row to all rows
+     d. Take the mean
+   This should exactly match embeddedness_over_time.csv.
+
+3. VERIFY EDGE TOGGLE DIRECTION:
+   Removing an edge from a well-connected node should DECREASE its
+   embeddedness (negative delta). If you see positive deltas for
+   removals, investigate — it could indicate the edge was actually
+   hurting centrality (rare but possible with adversarial structure).
+
+4. CHECK RANDOM DELETION MONOTONICITY:
+   In random_deletion_summary.csv, mean_delta should generally become
+   more negative as k increases (removing more edges hurts more).
+   Non-monotonicity is possible due to sampling but the trend should
+   be clear.
+
+5. REPRODUCE WITH FIXTURES FIRST:
+   Run: PYTHONPATH=src python scripts/master.py --summary
+   The fixture run has 3 countries and 2 years. Every value can be
+   hand-verified. Confirm the flag checks pass before trusting
+   full-data results.
+
+6. COMPARE TO embeddedness_analysis.py:
+   The standalone embeddedness_analysis.py script uses identical logic
+   (same build_adjacency, same adjacency_to_embeddings, same
+   embeddedness_score). Running both on the same data should produce
+   IDENTICAL embeddedness_over_time.csv and edge_toggle_impacts.csv.
+   Any discrepancy indicates a bug.

@@ -15,9 +15,9 @@ class MultiplexYear:
 
 
 REQUIRED_LAYERS = {
-    "alliances_defensive_offensive": "Defensive + offensive alliance ties",
-    "igo_shared": "Shared IGO memberships",
-    "trade": "Directed/undirected trade flow tie",
+    "alliances_defensive_offensive_undirected": "Defensive + offensive alliance ties",
+    "igo_shared_undirected": "Shared IGO memberships",
+    "trade_undirected": "Directed/undirected trade flow tie",
 }
 
 
@@ -34,9 +34,9 @@ def build_multiplex_from_peacesciencer(
 
     Expected files under output_dir:
       - nodes.csv (columns: ccode, state_name, cap_lat, cap_lon)
-      - layer_alliances_defensive_offensive.csv
-      - layer_igo_shared.csv
-      - layer_trade.csv
+      - layer_alliances_defensive_offensive_undirected.csv
+      - layer_igo_shared_undirected.csv
+      - layer_trade_undirected.csv
 
     Each layer CSV format: year, source_ccode, target_ccode, tie
 

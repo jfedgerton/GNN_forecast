@@ -1,4 +1,4 @@
-ccode,name,capital_latitude,capital_longitude
+ccode,state_name,cap_lat,cap_lon
 2,USA,38.9,-77.0
 710,China,39.9,116.4
 840,Example,0.0,0.0

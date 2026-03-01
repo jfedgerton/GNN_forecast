@@ -116,7 +116,28 @@ dy_trade <- dy_trade %>%
 write_csv(dy_trade, file.path(out_dir, "layer_trade_undirected.csv"))
 write_csv(dy_trade_weighted, file.path(out_dir, "layer_trade_undirected_weighted.csv"))
 
-message("Done. Wrote alliance + IGO + trade layers to: ", out_dir)
+# -----------------------
+# Export nodes.csv
+# -----------------------
+# Extract unique country codes seen across all layer dyads.
+all_ccodes <- sort(unique(c(dy$ccode1, dy$ccode2)))
+nodes_df <- data.frame(ccode = all_ccodes)
 
+# Add state names from COW state membership data if available.
+if (requireNamespace("peacesciencer", quietly = TRUE)) {
+  cow_states <- peacesciencer::cow_states %>%
+    transmute(ccode = as.integer(ccode), state_name = statenme) %>%
+    distinct(ccode, .keep_all = TRUE)
+  nodes_df <- nodes_df %>% left_join(cow_states, by = "ccode")
+}
 
+# Capital coordinates (cap_lat, cap_lon) are not directly available from
+# peacesciencer's dyad-level capdist. Users should add these from an external
+# source (e.g., the cshapes package) if needed by network_construction.py.
+# Placeholder NA columns are written so the schema is complete.
+nodes_df$cap_lat <- NA_real_
+nodes_df$cap_lon <- NA_real_
 
+write_csv(nodes_df, file.path(out_dir, "nodes.csv"))
+
+message("Done. Wrote nodes.csv + alliance + IGO + trade layers to: ", out_dir)

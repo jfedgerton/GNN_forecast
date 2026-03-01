@@ -28,16 +28,12 @@ import pandas as pd
 import torch
 
 from gnn_forecast.data_layer import CanonicalDataConfig, load_canonical_multiplex_data
-from gnn_forecast.forecast import EmbeddingAR, ForecastConfig, decode_edges, rollout_embeddings
+from gnn_forecast.forecast import EmbeddingAR, rollout_embeddings
 from gnn_forecast.interventions import (
     embeddedness_score,
     interventions_to_frame,
     simulate_edge_toggle,
     simulate_random_multi_edge_deletion,
-)
-from gnn_forecast.network_construction import (
-    capital_distance_matrix,
-    make_observed_and_residual_layers,
 )
 
 # ---------------------------------------------------------------
@@ -148,6 +144,14 @@ def adjacency_to_embeddings(adj: np.ndarray) -> torch.Tensor:
     a = torch.tensor(adj, dtype=torch.float32)
     deg = a.sum(1, keepdim=True).clamp(min=1.0)
     return a / deg
+
+
+def ccode_to_name(nodes_df: pd.DataFrame, ccode: int) -> str:
+    """Resolve a ccode to its state_name, falling back to str(ccode)."""
+    if "state_name" not in nodes_df.columns:
+        return str(ccode)
+    match = nodes_df.loc[nodes_df["ccode"] == ccode, "state_name"]
+    return match.values[0] if len(match) else str(ccode)
 
 
 def banner(stage: int, title: str) -> None:
@@ -409,15 +413,11 @@ for year in years:
         )
 
         for r in results:
-            partner_name = data.nodes.loc[
-                data.nodes["ccode"] == r.partner_ccode, "state_name"
-            ]
-            partner_label = partner_name.values[0] if len(partner_name) else str(r.partner_ccode)
             removal_rows.append({
                 "year": year,
                 "focal_country": label,
                 "focal_ccode": r.focal_ccode,
-                "partner": partner_label,
+                "partner": ccode_to_name(data.nodes, r.partner_ccode),
                 "partner_ccode": r.partner_ccode,
                 "operation": r.operation,
                 "embeddedness_delta": round(r.embeddedness_delta, 6),
@@ -441,13 +441,10 @@ if removal_df.empty:
                 focal_ccode=focal_cc, partner_ccodes=partners, add_if_missing=True,
             )
             for r in results:
-                partner_name = data.nodes.loc[
-                    data.nodes["ccode"] == r.partner_ccode, "state_name"
-                ]
-                partner_label = partner_name.values[0] if len(partner_name) else str(r.partner_ccode)
                 removal_rows.append({
                     "year": year, "focal_country": label,
-                    "focal_ccode": r.focal_ccode, "partner": partner_label,
+                    "focal_ccode": r.focal_ccode,
+                    "partner": ccode_to_name(data.nodes, r.partner_ccode),
                     "partner_ccode": r.partner_ccode, "operation": r.operation,
                     "embeddedness_delta": round(r.embeddedness_delta, 6),
                 })
@@ -505,10 +502,7 @@ for year in years:
         )
 
         for r in results:
-            partner_names = []
-            for pc in r.deleted_partner_ccodes:
-                match = data.nodes.loc[data.nodes["ccode"] == pc, "state_name"]
-                partner_names.append(match.values[0] if len(match) else str(pc))
+            partner_names = [ccode_to_name(data.nodes, pc) for pc in r.deleted_partner_ccodes]
 
             random_deletion_rows.append({
                 "year": year,
@@ -708,18 +702,8 @@ for f in _flag_results:
     print(f"  [{marker}] {f['code']}: {f['description']}")
 
 print()
-if _n_fail == 0:
-    print(f"  ALL FLAG CHECKS PASSED ({_n_pass}/{_n_total})")
-else:
-    print(f"  FLAG CHECKS: {_n_pass}/{_n_total} PASSED, {_n_fail} FAILED")
-    print()
-    print("  Failures:")
-    for f in _flag_results:
-        if f["status"] == "FAIL":
-            print(f"    {f['code']}: {f['description']}")
-    sys.exit(1)
 
-# Write flag report alongside outputs
+# Write flag report alongside outputs (before potential exit on failure)
 flag_report_path = OUT_DIR / "flag_check_report.txt"
 with open(flag_report_path, "w") as fh:
     fh.write(f"FLAG CHECK REPORT  (runtime: {elapsed:.1f}s)\n")
@@ -730,3 +714,14 @@ with open(flag_report_path, "w") as fh:
         fh.write(f"[{marker}] {f['code']}: {f['description']}\n")
     fh.write(f"\nTotal: {_n_pass}/{_n_total} passed, {_n_fail} failed\n")
 print(f"  Saved: {flag_report_path}")
+
+if _n_fail == 0:
+    print(f"  ALL FLAG CHECKS PASSED ({_n_pass}/{_n_total})")
+else:
+    print(f"  FLAG CHECKS: {_n_pass}/{_n_total} PASSED, {_n_fail} FAILED")
+    print()
+    print("  Failures:")
+    for f in _flag_results:
+        if f["status"] == "FAIL":
+            print(f"    {f['code']}: {f['description']}")
+    sys.exit(1)

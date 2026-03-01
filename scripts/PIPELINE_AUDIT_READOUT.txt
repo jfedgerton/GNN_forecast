@@ -330,12 +330,22 @@ SECTION 4: KNOWN LIMITATIONS & CAVEATS
    projection. The "first 8 columns" correspond to the 8 nodes with
    the lowest ccodes, which may not be the most informative.
 
-7. FIXTURE DATA IS TINY
+7. ROW NORMALIZATION ERASES WEIGHT MAGNITUDE
+   The adjacency_to_embeddings() function row-normalises, so each row
+   sums to 1.0.  This means layers with the same *topology* but
+   different *weights* produce identical embeddings.  For example,
+   alliance=1 and igo=3 for the same (i,j) pair contribute equally
+   to the row-normalised embedding.  The "aggregate" embeddedness
+   therefore differs from per-layer scores only when different layers
+   have different *connectivity* (different partners), not different
+   weights.  This is a deliberate simplification.
+
+8. FIXTURE DATA IS TINY
    The test fixtures have 3 countries and 2 years. All fixture results
    should be verified against full peacesciencer data for any
    substantive conclusions.
 
-8. DISTANCE RESIDUALIZATION DIFFERS FROM R SCRIPT
+9. DISTANCE RESIDUALIZATION DIFFERS FROM R SCRIPT
    The Python residualization uses simple OLS (tie ~ intercept + distance).
    The R script uses fixed-effects models controlling for node-level
    effects. Results will differ.

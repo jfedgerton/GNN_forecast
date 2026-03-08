@@ -42,6 +42,7 @@ from gnn_forecast.counterfactual import (
 from gnn_forecast.validation import walk_forward_backtest, multi_seed_evaluation
 from gnn_forecast.visualization import generate_all_tables, embeddedness_time_series
 from gnn_forecast.baselines import compare_baselines
+from gnn_forecast.isolation_analysis import run_isolation_analysis
 
 # ============================================================
 # CLI arguments
@@ -66,6 +67,7 @@ ap.add_argument("--skip-backtest", action="store_true")
 ap.add_argument("--skip-baselines", action="store_true")
 ap.add_argument("--skip-multiseed", action="store_true")
 ap.add_argument("--skip-counterfactual", action="store_true")
+ap.add_argument("--skip-isolation", action="store_true")
 args = ap.parse_args()
 
 data_dir = Path(args.data_dir)
@@ -314,10 +316,67 @@ if not args.skip_counterfactual:
                 top_interventions(df_wt, 30).to_csv(cf_dir / f"cf_{focal_label}_weighted_top30.csv", index=False)
 
 # ============================================================
-# 9. Generate all tables and figure data
+# 9. Isolation analysis: paired USA vs China edge effects
+# ============================================================
+if not args.skip_isolation:
+    print("\n" + "=" * 60)
+    print("STEP 9: Isolation Analysis (USA vs China)")
+    print("=" * 60)
+
+    iso_partners = partners  # reuse partner list from counterfactual step
+    if iso_partners is None and args.cf_max_partners > 0:
+        all_partners = sorted([cc for cc in ccode_to_idx.keys() if cc not in (USA_CCODE, CHN_CCODE)])
+        if len(all_partners) > args.cf_max_partners:
+            step = len(all_partners) // args.cf_max_partners
+            iso_partners = all_partners[::step][:args.cf_max_partners]
+
+    # Example multi-edge scenarios (policy-relevant)
+    multi_scenarios = {
+        "India leaves US orbit (trade + alliance)": [
+            (750, "trade", "remove"),
+            (750, "defensive_alliances", "remove"),
+        ],
+        "Brazil joins China (trade + IGO)": [
+            (140, "trade", "add"),
+            (140, "igo", "add"),
+        ],
+        "US loses Turkey alliance": [
+            (640, "defensive_alliances", "remove"),
+            (640, "offensive_alliances", "remove"),
+        ],
+        "China gains South Korea trade": [
+            (732, "trade", "add"),
+        ],
+    }
+
+    # Raw model
+    run_isolation_analysis(
+        model=raw_result.model,
+        dataset=raw_dataset,
+        out_dir=out_dir / "isolation_raw",
+        partner_ccodes=iso_partners,
+        seq_len=args.seq_len,
+        multi_edge_scenarios=multi_scenarios,
+        device=device,
+    )
+
+    # Weighted model
+    if wt_result and wt_dataset:
+        run_isolation_analysis(
+            model=wt_result.model,
+            dataset=wt_dataset,
+            out_dir=out_dir / "isolation_weighted",
+            partner_ccodes=iso_partners,
+            seq_len=args.seq_len,
+            multi_edge_scenarios=multi_scenarios,
+            device=device,
+        )
+
+# ============================================================
+# 10. Generate all tables and figure data
 # ============================================================
 print("\n" + "=" * 60)
-print("STEP 9: Generating Tables and Figure Data")
+print("STEP 10: Generating Tables and Figure Data")
 print("=" * 60)
 
 tables = generate_all_tables(
@@ -346,5 +405,7 @@ if not args.skip_baselines:
     print(f"  {out_dir}/baselines/          - Baseline model comparisons")
 if not args.skip_counterfactual:
     print(f"  {out_dir}/counterfactual/     - Counterfactual simulation results")
+if not args.skip_isolation:
+    print(f"  {out_dir}/isolation_raw/      - USA vs China isolation analysis + figures")
 print(f"  {out_dir}/tables/             - All manuscript tables and figure data")
 print(f"  {out_dir}/forecast_raw.pt     - Forecast embeddings")

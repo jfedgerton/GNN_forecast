@@ -18,6 +18,11 @@ from .counterfactual import (
 from .validation import walk_forward_backtest, multi_seed_evaluation
 from .visualization import generate_all_tables, embeddedness_time_series
 from .baselines import compare_baselines
+from .isolation_analysis import (
+    run_isolation_analysis,
+    dual_focal_simulation,
+    multi_edge_simulation,
+)
 
 __all__ = [
     "build_multiplex_from_peacesciencer",
@@ -39,4 +44,7 @@ __all__ = [
     "generate_all_tables",
     "embeddedness_time_series",
     "compare_baselines",
+    "run_isolation_analysis",
+    "dual_focal_simulation",
+    "multi_edge_simulation",
 ]

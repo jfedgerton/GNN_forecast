@@ -15,6 +15,9 @@ from .counterfactual import (
     results_to_dataframe,
     compute_embeddedness_metrics,
 )
+from .validation import walk_forward_backtest, multi_seed_evaluation
+from .visualization import generate_all_tables, embeddedness_time_series
+from .baselines import compare_baselines
 
 __all__ = [
     "build_multiplex_from_peacesciencer",
@@ -31,4 +34,9 @@ __all__ = [
     "batch_counterfactual_analysis",
     "results_to_dataframe",
     "compute_embeddedness_metrics",
+    "walk_forward_backtest",
+    "multi_seed_evaluation",
+    "generate_all_tables",
+    "embeddedness_time_series",
+    "compare_baselines",
 ]

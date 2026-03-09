@@ -3,7 +3,7 @@ MANUSCRIPT PREPARATION TODO — Political Analysis Submission
 Dynamic Multiplex GNN for Forecasting International Embedding Space
 ================================================================================
 
-Last updated: 2026-03-08
+Last updated: 2026-03-09
 Repository: GNN_forecast
 
 ================================================================================
@@ -149,8 +149,10 @@ IMPLEMENTED (READY TO USE)
     - Contiguity export
     - FE-residualized weighted versions via fixest::feols
 
-[x] Tests (23 passing)
+[x] Tests (46 passing)
+    tests/test_data_layer.py (2 tests):
     - Data loading and node indexing
+    tests/test_multiplex_model.py (19 tests):
     - Layer masking for missing years
     - GCN layer (including empty graph)
     - Layer aggregation (including all-masked case)
@@ -158,6 +160,26 @@ IMPLEMENTED (READY TO USE)
     - Full model encode + temporal
     - Embeddedness metrics
     - Tie-strength residualization (binary + continuous)
+    tests/test_isolation_analysis.py (23 tests):
+    - Dual-focal simulation (returns results, both operations, excludes
+      USA/China, specific partner filter, all result fields)
+    - DataFrame conversion and quadrant classification
+    - Ranking functions (top-N, ordering correctness)
+    - Layer heatmap aggregation
+    - Multi-edge simulation (named scenarios, result fields, DataFrame)
+    - Greedy combo search (returns results, interaction columns, all 4
+      objectives, size constraint, custom objectives, interaction math)
+    - Full pipeline (output files, skip_combos flag, with scenarios)
+    tests/test_network_utils.py (2 tests):
+    - Network construction + intervention tests
+
+[x] Paper outline (OUTLINE_political_analysis.txt)
+    - Full 8-section structure for Political Analysis submission
+    - Section-by-section word targets (~10,000 words main text)
+    - 8 figures + 5 tables inventory
+    - Key references list
+    - Downstream validation options (critical for PA acceptance)
+    - Appendix structure (8 sections)
 
 ================================================================================
 YOU NEED TO DO (manual / requires external data)
@@ -498,9 +520,13 @@ Scripts:
   rebuild_temporal_layers_debug.py Layer diagnostics
 
 Tests:
-  test_data_layer.py        Canonical data loading tests
-  test_multiplex_model.py   Multiplex GNN + pipeline tests (19 tests, new)
-  test_network_utils.py     Network construction + intervention tests
+  test_data_layer.py          Canonical data loading tests (2 tests)
+  test_multiplex_model.py     Multiplex GNN + pipeline tests (19 tests)
+  test_isolation_analysis.py  Isolation analysis + greedy combos (23 tests, new)
+  test_network_utils.py       Network construction + intervention tests (2 tests)
+
+Manuscript:
+  OUTLINE_political_analysis.txt  Full PA paper outline with section structure
 
 Data:
   data/processed/           Layer CSVs from R export

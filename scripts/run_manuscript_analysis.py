@@ -68,6 +68,12 @@ ap.add_argument("--skip-baselines", action="store_true")
 ap.add_argument("--skip-multiseed", action="store_true")
 ap.add_argument("--skip-counterfactual", action="store_true")
 ap.add_argument("--skip-isolation", action="store_true")
+ap.add_argument("--skip-combos", action="store_true",
+                help="Skip greedy combo search within isolation analysis")
+ap.add_argument("--combo-top-k", type=int, default=10,
+                help="Top-k single edges to compose into combos (default: 10)")
+ap.add_argument("--combo-max-size", type=int, default=3,
+                help="Max edges per combination (default: 3)")
 args = ap.parse_args()
 
 data_dir = Path(args.data_dir)
@@ -357,6 +363,9 @@ if not args.skip_isolation:
         partner_ccodes=iso_partners,
         seq_len=args.seq_len,
         multi_edge_scenarios=multi_scenarios,
+        combo_top_k=args.combo_top_k,
+        combo_max_size=args.combo_max_size,
+        skip_combos=args.skip_combos,
         device=device,
     )
 
@@ -369,6 +378,9 @@ if not args.skip_isolation:
             partner_ccodes=iso_partners,
             seq_len=args.seq_len,
             multi_edge_scenarios=multi_scenarios,
+            combo_top_k=args.combo_top_k,
+            combo_max_size=args.combo_max_size,
+            skip_combos=args.skip_combos,
             device=device,
         )
 

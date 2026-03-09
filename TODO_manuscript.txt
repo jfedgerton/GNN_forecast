@@ -104,10 +104,42 @@ IMPLEMENTED (READY TO USE)
     - Loss curves
     - Model Set 1 vs Model Set 2 comparison tables
 
+[x] Isolation analysis — paired USA/China edge effects
+    (src/gnn_forecast/isolation_analysis.py)
+    - Dual-focal simulation: perturb one edge, measure effects on BOTH
+      USA and China in a single forward pass
+    - Quadrant classification: which edges embed one power while isolating
+      the other (Q2 = USA isolated + China embedded, Q4 = reverse)
+    - Wedge rankings: edges with the most asymmetric USA-vs-China effects
+    - Layer-level heatmaps: which tie types are most consequential
+    - Multi-edge scenarios: user-defined bundles of simultaneous changes
+      (e.g., "India leaves US orbit: remove trade + alliance")
+    - Greedy combinatorial search: take top-k single edges per objective,
+      test all C(k,2) pairs + C(k,3) triples, measure interaction effects
+      (super-additive = synergy, sub-additive = redundancy)
+    - Outputs:
+      * dual_focal_all.csv             — all single-edge perturbation effects
+      * quadrant_summary.csv           — counts by quadrant x layer
+      * top_usa_isolating.csv          — top 30 edges that most isolate USA
+      * top_china_isolating.csv        — top 30 edges that most isolate China
+      * top_wedge_edges.csv            — top 30 most asymmetric edges
+      * top_pro_usa.csv / top_pro_china.csv
+      * layer_isolation_heatmap.csv    — per-layer aggregated effects
+      * multi_edge_scenarios.csv       — user-defined scenario results
+      * combos/combos_*.csv            — greedy combo results per objective
+      * combos/top_superadditive_combos.csv — strongest interaction effects
+    - Figures (matplotlib when available):
+      * scatter_usa_vs_china.png       — 4-quadrant scatter (core figure)
+      * heatmap_layer_isolation.png    — layer x metric heatmap
+      * bar_top_wedge_edges.png        — horizontal bar of asymmetric edges
+      * bar_multi_edge.png             — grouped bars for named scenarios
+      * interactions_*.png             — additive vs actual (synergy plots)
+
 [x] End-to-end pipeline scripts
     - scripts/run_full_pipeline.py        (basic two-model-set run)
-    - scripts/run_manuscript_analysis.py  (full manuscript pipeline with
-      backtesting, multi-seed, baselines, counterfactuals, tables)
+    - scripts/run_manuscript_analysis.py  (full 10-step manuscript pipeline with
+      backtesting, multi-seed, baselines, counterfactuals, isolation analysis,
+      greedy combos, tables)
 
 [x] R export script (scripts/export_peacesciencer_layers.R)
     - Separate offensive and defensive alliance layers
@@ -243,6 +275,67 @@ YOU NEED TO DO (manual / requires external data)
     This is slow for 200+ states x 5 layers x 2 operations but produces
     the main results tables.
 
+--- ISOLATION ANALYSIS (USA vs CHINA) ---
+
+[ ] Run the isolation analysis (runs automatically in pipeline step 9)
+    This is a paired analysis: each edge perturbation is measured for its
+    effect on BOTH USA and China embeddedness simultaneously.
+
+    Key outputs:
+      outputs/manuscript/isolation_raw/
+        dual_focal_all.csv              — every single-edge perturbation
+        scatter_usa_vs_china.png        — the core 4-quadrant figure
+        heatmap_layer_isolation.png     — which layers matter most
+        bar_top_wedge_edges.png         — most asymmetric edges
+        top_usa_isolating.csv           — edges that most isolate USA
+        top_china_isolating.csv         — edges that most isolate China
+        top_wedge_edges.csv             — largest USA-vs-China asymmetry
+        multi_edge_scenarios.csv        — policy scenario bundles
+
+    Greedy combo search outputs:
+      outputs/manuscript/isolation_raw/combos/
+        combos_usa_isolating.csv        — edge combos that most isolate USA
+        combos_china_isolating.csv      — edge combos that most isolate China
+        combos_pro_usa_wedge.csv        — combos favoring USA over China
+        combos_pro_china_wedge.csv      — combos favoring China over USA
+        top_superadditive_combos.csv    — combos with strongest interaction effects
+        interactions_*.png              — additive vs actual plots (synergy detection)
+
+    Computational cost estimate (for ~200 states, 5 layers):
+      Single-edge sweep: ~2,000 perturbations              — minutes
+      Greedy combos (top-10, pairs+triples):
+        4 objectives × (C(10,2) + C(10,3)) = 4 × 165 = 660 — minutes
+      Named multi-edge scenarios: one per scenario          — seconds
+      TOTAL: ~15-30 minutes on CPU, much less on GPU
+
+    CLI flags:
+      --combo-top-k 10       # top-k edges to compose (default 10)
+      --combo-max-size 3     # max edges per combo (default 3)
+      --skip-combos          # skip greedy combo search
+      --skip-isolation       # skip entire isolation analysis
+
+    Interpretation guide:
+      - "wedge_cosine" = USA_delta - China_delta
+        Positive = edge change favors USA
+        Negative = edge change favors China
+      - "usa_interaction" / "chn_interaction" = combo effect - sum(individual effects)
+        Positive = super-additive (edges reinforce each other)
+        Negative = sub-additive (edges are redundant)
+      - Quadrant Q2 (USA isolated, China embedded) is the "worst case for US"
+      - Quadrant Q4 (USA embedded, China isolated) is the "worst case for China"
+      - The scatter plot is the key manuscript figure: it shows the full
+        landscape of edge effects on both powers simultaneously
+
+[ ] Define additional multi-edge scenarios
+    The pipeline ships with 4 example scenarios. Add more based on your
+    substantive knowledge. Edit the multi_scenarios dict in
+    scripts/run_manuscript_analysis.py. Examples to consider:
+      - "US loses Philippines alliance"
+      - "China gains ASEAN trade bloc"
+      - "Russia-China alliance deepening"
+      - "EU trade decoupling from China"
+    Each scenario requires one forward pass — negligible cost.
+
 --- MANUSCRIPT WRITING ---
 
 [ ] Theory section
@@ -273,6 +366,10 @@ YOU NEED TO DO (manual / requires external data)
       5. Model Set 1 vs 2 comparison
       6. Counterfactual rankings (main results tables)
       7. Cross-layer comparison (offensive vs defensive vs trade vs IGO vs DCA)
+      8. USA vs China isolation scatter (4-quadrant figure — core finding)
+      9. Top isolating edges and wedge edges (asymmetric leverage points)
+     10. Edge combination interactions (which bundles are super-additive?)
+     11. Named policy scenarios (India, Turkey, Brazil, South Korea, etc.)
 
 [ ] Discussion section
     Policy-relevant questions:
@@ -342,18 +439,30 @@ python -m pytest tests/ -v
 # Export data from R (requires R + peacesciencer + fixest)
 Rscript scripts/export_peacesciencer_layers.R
 
-# Quick test run
+# Quick test run (skip heavy steps)
 python scripts/run_manuscript_analysis.py \
   --data-dir data/processed --out-dir outputs/test \
   --start-year 1950 --end-year 2000 --epochs 20 \
-  --cf-max-partners 20 --skip-multiseed --skip-baselines
+  --cf-max-partners 20 --skip-multiseed --skip-baselines --skip-combos
 
 # Full manuscript run
 python scripts/run_manuscript_analysis.py \
   --data-dir data/processed --out-dir outputs/manuscript \
   --start-year 1950 --end-year 2014 --epochs 200 --n-seeds 10
 
-# Inspect outputs
+# Full run with larger combo search (top-15 edges, up to size 4)
+python scripts/run_manuscript_analysis.py \
+  --data-dir data/processed --out-dir outputs/manuscript \
+  --start-year 1950 --end-year 2014 --epochs 200 --n-seeds 10 \
+  --combo-top-k 15 --combo-max-size 4
+
+# Inspect isolation analysis outputs
+ls outputs/manuscript/isolation_raw/
+ls outputs/manuscript/isolation_raw/combos/
+cat outputs/manuscript/isolation_raw/top_wedge_edges.csv
+cat outputs/manuscript/isolation_raw/combos/top_superadditive_combos.csv
+
+# Inspect other outputs
 ls outputs/manuscript/tables/
 ls outputs/manuscript/counterfactual/
 cat outputs/manuscript/backtest/backtest_summary.csv
@@ -376,6 +485,7 @@ Source code (src/gnn_forecast/):
   validation.py           Backtesting and multi-seed evaluation (new)
   visualization.py        Table and figure data generation (new)
   baselines.py            Baseline models for comparison (new)
+  isolation_analysis.py   Paired USA/China isolation, greedy combos, figures (new)
   interventions.py        Legacy intervention module
   pipeline.py             Legacy pipeline orchestration
 

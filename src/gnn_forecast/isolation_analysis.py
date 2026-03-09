@@ -480,6 +480,345 @@ def multi_edge_simulation(
 
 
 # ---------------------------------------------------------------
+# Greedy combinatorial edge search
+# ---------------------------------------------------------------
+
+@dataclass
+class ComboResult:
+    """Effect of a combination of edge perturbations on USA and China."""
+    combo_id: int
+    combo_size: int
+    edges: List[Tuple[int, str, str]]  # [(partner_ccode, layer, operation), ...]
+    label: str
+    usa_delta_cosine: float
+    usa_delta_centroid: float
+    chn_delta_cosine: float
+    chn_delta_centroid: float
+    wedge_cosine: float
+    # Interaction: combo effect minus sum of individual effects
+    usa_interaction: float
+    chn_interaction: float
+
+
+def greedy_combo_search(
+    model: MultiplexTemporalGNN,
+    dataset: MultiplexTemporalDataset,
+    single_edge_df: pd.DataFrame,
+    objectives: Optional[List[str]] = None,
+    top_k: int = 10,
+    max_combo_size: int = 3,
+    seq_len: int = 5,
+    focal_year: Optional[int] = None,
+    device: Optional[torch.device] = None,
+) -> Dict[str, pd.DataFrame]:
+    """Greedy combinatorial search over edge perturbation sets.
+
+    Strategy:
+      1. From the single-edge sweep, select the top-k edges per objective.
+      2. Test all C(k,2) pairs and C(k,3) triples from that shortlist.
+      3. Compare combo effects to the sum of individual effects to find
+         super-additive (interaction) effects.
+
+    For top_k=10, max_combo_size=3:
+      - Pairs: C(10,2) = 45 forward passes per objective
+      - Triples: C(10,3) = 120 forward passes per objective
+      - Total: ~165 per objective × 4 objectives = ~660 runs — very tractable.
+
+    Parameters
+    ----------
+    model : trained MultiplexTemporalGNN
+    dataset : MultiplexTemporalDataset
+    single_edge_df : DataFrame from dual_results_to_dataframe() (the single-edge sweep)
+    objectives : which rankings to search over. Default:
+        ["usa_isolating", "china_isolating", "pro_usa_wedge", "pro_china_wedge"]
+    top_k : how many top single edges to compose into combos
+    max_combo_size : test pairs (2) and triples (3), up to this size
+    seq_len : temporal window
+    focal_year : year to analyze
+    device : torch device
+
+    Returns
+    -------
+    Dict mapping objective_name -> DataFrame of combo results.
+    """
+    from itertools import combinations
+
+    if device is None:
+        device = next(model.parameters()).device
+    if focal_year is None:
+        focal_year = dataset.years[-1]
+
+    if objectives is None:
+        objectives = [
+            "usa_isolating",
+            "china_isolating",
+            "pro_usa_wedge",
+            "pro_china_wedge",
+        ]
+
+    ccode_to_idx = dataset.ccode_to_idx
+    usa_idx = ccode_to_idx[USA_CCODE]
+    chn_idx = ccode_to_idx[CHN_CCODE]
+
+    # Build embedding history + baseline (once, shared across all combos)
+    years = [y for y in dataset.years if y <= focal_year]
+    model.eval()
+    embedding_history: List[torch.Tensor] = []
+    with torch.no_grad():
+        for year in years[-seq_len:]:
+            snap = dataset.snapshots[year]
+            nf = snap.node_features.to(device)
+            ei = {k: v.to(device) for k, v in snap.edge_indices.items()}
+            ew = {k: v.to(device) for k, v in snap.edge_weights.items()}
+            embedding_history.append(model.encode_snapshot(nf, ei, ew, snap.layer_mask))
+
+    target_snap = dataset.snapshots[focal_year]
+
+    with torch.no_grad():
+        baseline_pred = model.forward_temporal(embedding_history[-seq_len:])
+        usa_base = compute_embeddedness_metrics(baseline_pred, usa_idx, ccode_to_idx)
+        chn_base = compute_embeddedness_metrics(baseline_pred, chn_idx, ccode_to_idx)
+
+    # Build lookup for individual edge effects (for interaction calculation)
+    single_effects: Dict[Tuple[int, str, str], Tuple[float, float]] = {}
+    for _, row in single_edge_df.iterrows():
+        key = (int(row["partner_ccode"]), row["layer"], row["operation"])
+        single_effects[key] = (row["usa_delta_cosine"], row["chn_delta_cosine"])
+
+    # Select top-k candidate edges per objective
+    objective_candidates: Dict[str, List[Tuple[int, str, str]]] = {}
+
+    for obj in objectives:
+        if obj == "usa_isolating":
+            top_df = single_edge_df.nsmallest(top_k, "usa_delta_cosine")
+        elif obj == "china_isolating":
+            top_df = single_edge_df.nsmallest(top_k, "chn_delta_cosine")
+        elif obj == "pro_usa_wedge":
+            top_df = single_edge_df.nlargest(top_k, "wedge_cosine")
+        elif obj == "pro_china_wedge":
+            top_df = single_edge_df.nsmallest(top_k, "wedge_cosine")
+        else:
+            continue
+
+        candidates = [
+            (int(row["partner_ccode"]), row["layer"], row["operation"])
+            for _, row in top_df.iterrows()
+        ]
+        objective_candidates[obj] = candidates
+
+    # Simulate combos
+    all_results: Dict[str, pd.DataFrame] = {}
+
+    for obj, candidates in objective_candidates.items():
+        print(f"\n  Greedy combo search: {obj} (top-{len(candidates)} edges, "
+              f"combos up to size {max_combo_size})")
+
+        combo_results: List[ComboResult] = []
+        combo_id = 0
+
+        for combo_size in range(2, max_combo_size + 1):
+            combos = list(combinations(range(len(candidates)), combo_size))
+            print(f"    Size {combo_size}: {len(combos)} combinations")
+
+            with torch.no_grad():
+                for combo_indices in combos:
+                    edges = [candidates[i] for i in combo_indices]
+
+                    # Apply all edge modifications simultaneously
+                    mod_ei = {}
+                    mod_ew = {}
+                    for ln in target_snap.edge_indices:
+                        mod_ei[ln] = target_snap.edge_indices[ln].clone().to(device)
+                        mod_ew[ln] = target_snap.edge_weights[ln].clone().to(device)
+
+                    for partner_cc, layer, op in edges:
+                        if partner_cc not in ccode_to_idx or layer not in mod_ei:
+                            continue
+                        pidx = ccode_to_idx[partner_cc]
+                        ei_l = mod_ei[layer]
+                        ew_l = mod_ew[layer]
+
+                        if op == "remove" and ei_l.numel() > 0:
+                            keep = ~((ei_l[0] == pidx) | (ei_l[1] == pidx))
+                            mod_ei[layer] = ei_l[:, keep]
+                            mod_ew[layer] = ew_l[keep]
+                        elif op == "add":
+                            existing = set()
+                            if ei_l.numel() > 0:
+                                src_mask = ei_l[0] == pidx
+                                existing.update(ei_l[1, src_mask].cpu().tolist())
+                                tgt_mask = ei_l[1] == pidx
+                                existing.update(ei_l[0, tgt_mask].cpu().tolist())
+                            unconnected = [
+                                n for n in range(dataset.num_nodes)
+                                if n != pidx and n not in existing
+                            ]
+                            new_tgt = unconnected[:50]
+                            if new_tgt:
+                                src = [pidx] * len(new_tgt) + new_tgt
+                                tgt = new_tgt + [pidx] * len(new_tgt)
+                                new_e = torch.tensor([src, tgt], dtype=torch.long, device=device)
+                                new_w = torch.ones(len(src), device=device)
+                                if ei_l.numel() > 0:
+                                    mod_ei[layer] = torch.cat([ei_l, new_e], dim=1)
+                                    mod_ew[layer] = torch.cat([ew_l, new_w])
+                                else:
+                                    mod_ei[layer] = new_e
+                                    mod_ew[layer] = new_w
+
+                    nf = target_snap.node_features.to(device)
+                    mod_emb = model.encode_snapshot(nf, mod_ei, mod_ew, target_snap.layer_mask)
+                    mod_history = list(embedding_history[:-1]) + [mod_emb]
+                    cf_pred = model.forward_temporal(mod_history[-seq_len:])
+
+                    usa_cf = compute_embeddedness_metrics(cf_pred, usa_idx, ccode_to_idx)
+                    chn_cf = compute_embeddedness_metrics(cf_pred, chn_idx, ccode_to_idx)
+
+                    usa_d = usa_cf.mean_cosine_similarity - usa_base.mean_cosine_similarity
+                    chn_d = chn_cf.mean_cosine_similarity - chn_base.mean_cosine_similarity
+
+                    # Sum of individual effects (additive prediction)
+                    sum_usa = sum(single_effects.get(e, (0, 0))[0] for e in edges)
+                    sum_chn = sum(single_effects.get(e, (0, 0))[1] for e in edges)
+
+                    label = " + ".join(
+                        f"cc{cc}/{ly}/{op}" for cc, ly, op in edges
+                    )
+
+                    combo_results.append(ComboResult(
+                        combo_id=combo_id,
+                        combo_size=combo_size,
+                        edges=edges,
+                        label=label,
+                        usa_delta_cosine=usa_d,
+                        usa_delta_centroid=usa_cf.centroid_distance - usa_base.centroid_distance,
+                        chn_delta_cosine=chn_d,
+                        chn_delta_centroid=chn_cf.centroid_distance - chn_base.centroid_distance,
+                        wedge_cosine=usa_d - chn_d,
+                        usa_interaction=usa_d - sum_usa,
+                        chn_interaction=chn_d - sum_chn,
+                    ))
+                    combo_id += 1
+
+        # Convert to DataFrame
+        rows = []
+        for cr in combo_results:
+            rows.append({
+                "combo_id": cr.combo_id,
+                "combo_size": cr.combo_size,
+                "edges": str(cr.edges),
+                "label": cr.label,
+                "usa_delta_cosine": cr.usa_delta_cosine,
+                "usa_delta_centroid": cr.usa_delta_centroid,
+                "chn_delta_cosine": cr.chn_delta_cosine,
+                "chn_delta_centroid": cr.chn_delta_centroid,
+                "wedge_cosine": cr.wedge_cosine,
+                "usa_interaction": cr.usa_interaction,
+                "chn_interaction": cr.chn_interaction,
+                "abs_usa_interaction": abs(cr.usa_interaction),
+                "abs_chn_interaction": abs(cr.chn_interaction),
+            })
+        combo_df = pd.DataFrame(rows)
+
+        if not combo_df.empty:
+            # Sort by the objective
+            if obj == "usa_isolating":
+                combo_df = combo_df.sort_values("usa_delta_cosine")
+            elif obj == "china_isolating":
+                combo_df = combo_df.sort_values("chn_delta_cosine")
+            elif obj == "pro_usa_wedge":
+                combo_df = combo_df.sort_values("wedge_cosine", ascending=False)
+            elif obj == "pro_china_wedge":
+                combo_df = combo_df.sort_values("wedge_cosine")
+
+            print(f"    Top 5 combos for {obj}:")
+            display_cols = ["combo_size", "label", "usa_delta_cosine",
+                            "chn_delta_cosine", "wedge_cosine",
+                            "usa_interaction", "chn_interaction"]
+            print(combo_df[display_cols].head(5).to_string(index=False))
+
+        all_results[obj] = combo_df
+
+    return all_results
+
+
+def plot_combo_interactions(
+    combo_df: pd.DataFrame,
+    objective_name: str,
+    out_path: Optional[str | Path] = None,
+) -> Optional[object]:
+    """Plot combo effects vs additive predictions to show interactions.
+
+    X-axis: sum of individual effects (additive prediction)
+    Y-axis: actual combo effect
+    Points above the diagonal = super-additive (synergy)
+    Points below = sub-additive (redundancy)
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+
+    if combo_df.empty:
+        return None
+
+    # Compute additive prediction from the difference
+    combo_df = combo_df.copy()
+    combo_df["additive_usa"] = combo_df["usa_delta_cosine"] - combo_df["usa_interaction"]
+    combo_df["additive_chn"] = combo_df["chn_delta_cosine"] - combo_df["chn_interaction"]
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    for ax, country, actual_col, additive_col, inter_col in [
+        (axes[0], "USA", "usa_delta_cosine", "additive_usa", "usa_interaction"),
+        (axes[1], "China", "chn_delta_cosine", "additive_chn", "chn_interaction"),
+    ]:
+        sizes = combo_df["combo_size"]
+        markers = {2: "o", 3: "s", 4: "D", 5: "p"}
+
+        for sz in sorted(sizes.unique()):
+            subset = combo_df[combo_df["combo_size"] == sz]
+            ax.scatter(
+                subset[additive_col], subset[actual_col],
+                marker=markers.get(sz, "o"), alpha=0.6, s=50,
+                label=f"Size {sz}", edgecolors="white", linewidths=0.3,
+            )
+
+        # Diagonal line (additive = actual, no interaction)
+        lims = [
+            min(ax.get_xlim()[0], ax.get_ylim()[0]),
+            max(ax.get_xlim()[1], ax.get_ylim()[1]),
+        ]
+        ax.plot(lims, lims, "k--", alpha=0.4, linewidth=1)
+        ax.set_xlim(lims)
+        ax.set_ylim(lims)
+
+        ax.set_xlabel(f"Sum of individual effects (additive)")
+        ax.set_ylabel(f"Actual combo effect")
+        ax.set_title(f"{country}: Combo vs Additive ({objective_name})")
+        ax.legend(fontsize=8)
+
+        # Annotate: above diagonal = super-additive
+        ax.text(lims[0] + (lims[1] - lims[0]) * 0.05,
+                lims[1] - (lims[1] - lims[0]) * 0.05,
+                "Super-additive\n(synergy)", fontsize=8, color="green", va="top")
+        ax.text(lims[1] - (lims[1] - lims[0]) * 0.05,
+                lims[0] + (lims[1] - lims[0]) * 0.05,
+                "Sub-additive\n(redundancy)", fontsize=8, color="red",
+                ha="right", va="bottom")
+
+    fig.suptitle(f"Edge Combination Interactions: {objective_name}", fontsize=12)
+    fig.tight_layout()
+
+    if out_path:
+        fig.savefig(out_path, dpi=200, bbox_inches="tight")
+        print(f"  Saved interaction plot: {out_path}")
+    return fig
+
+
+# ---------------------------------------------------------------
 # DataFrame conversion
 # ---------------------------------------------------------------
 
@@ -848,6 +1187,9 @@ def run_isolation_analysis(
     seq_len: int = 5,
     focal_year: Optional[int] = None,
     multi_edge_scenarios: Optional[Dict[str, List[Tuple[int, str, str]]]] = None,
+    combo_top_k: int = 10,
+    combo_max_size: int = 3,
+    skip_combos: bool = False,
     device: Optional[torch.device] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Run the full isolation analysis pipeline and save all outputs.
@@ -863,6 +1205,9 @@ def run_isolation_analysis(
     multi_edge_scenarios : named sets of simultaneous edge interventions.
         Example: {"US loses India": [(750, "trade", "remove"),
                                      (750, "defensive_alliances", "remove")]}
+    combo_top_k : how many top single edges to compose into combos
+    combo_max_size : max edges per combination (2 or 3 recommended)
+    skip_combos : skip the greedy combo search entirely
     device : torch device
 
     Returns
@@ -877,7 +1222,7 @@ def run_isolation_analysis(
     print("ISOLATION ANALYSIS: USA vs China Edge Effects")
     print("=" * 60)
 
-    # 1. Dual-focal simulation
+    # 1. Dual-focal simulation (single-edge sweep)
     print("\n1. Running dual-focal edge simulations...")
     dual_results = dual_focal_simulation(
         model, dataset, partner_ccodes=partner_ccodes,
@@ -942,6 +1287,53 @@ def run_isolation_analysis(
         outputs["multi_edge"] = me_df
         plot_multi_edge_scenarios(me_results, out_dir / "bar_multi_edge.png")
         print(me_df.to_string(index=False))
+
+    # 7. Greedy combinatorial search
+    if not skip_combos:
+        print(f"\n7. Greedy combo search (top-{combo_top_k}, "
+              f"combos up to size {combo_max_size})...")
+        combo_dir = out_dir / "combos"
+        combo_dir.mkdir(parents=True, exist_ok=True)
+
+        combo_results = greedy_combo_search(
+            model=model,
+            dataset=dataset,
+            single_edge_df=df,
+            top_k=combo_top_k,
+            max_combo_size=combo_max_size,
+            seq_len=seq_len,
+            focal_year=focal_year,
+            device=device,
+        )
+
+        for obj_name, combo_df in combo_results.items():
+            combo_df.to_csv(combo_dir / f"combos_{obj_name}.csv", index=False)
+            outputs[f"combos_{obj_name}"] = combo_df
+            plot_combo_interactions(
+                combo_df, obj_name,
+                combo_dir / f"interactions_{obj_name}.png",
+            )
+
+        # Summary: top 10 combos across all objectives with strongest
+        # super-additive interactions
+        all_combos = []
+        for obj_name, combo_df in combo_results.items():
+            if not combo_df.empty:
+                cdf = combo_df.copy()
+                cdf["objective"] = obj_name
+                all_combos.append(cdf)
+        if all_combos:
+            merged = pd.concat(all_combos, ignore_index=True)
+            merged["max_abs_interaction"] = merged[
+                ["abs_usa_interaction", "abs_chn_interaction"]
+            ].max(axis=1)
+            top_interactions = merged.nlargest(20, "max_abs_interaction")
+            top_interactions.to_csv(
+                combo_dir / "top_superadditive_combos.csv", index=False,
+            )
+            outputs["top_superadditive"] = top_interactions
+            print(f"\n  Top super-additive combos saved to "
+                  f"{combo_dir / 'top_superadditive_combos.csv'}")
 
     print(f"\nSaved {len(outputs)} tables and figures to {out_dir}")
     return outputs

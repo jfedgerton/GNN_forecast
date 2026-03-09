@@ -22,6 +22,7 @@ from .isolation_analysis import (
     run_isolation_analysis,
     dual_focal_simulation,
     multi_edge_simulation,
+    greedy_combo_search,
 )
 
 __all__ = [
@@ -47,4 +48,5 @@ __all__ = [
     "run_isolation_analysis",
     "dual_focal_simulation",
     "multi_edge_simulation",
+    "greedy_combo_search",
 ]

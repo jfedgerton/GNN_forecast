@@ -127,7 +127,7 @@ usa_results = simulate_edge_toggle(
     emb=final_emb,
     node_to_idx=node_to_idx,
     focal_ccode=USA_CCODE,
-    partners=partners,
+    partner_ccodes=partners,
 )
 usa_df = interventions_to_frame(usa_results)
 usa_df.to_csv(out_dir / "interventions_usa.csv", index=False)
@@ -140,7 +140,7 @@ chn_results = simulate_edge_toggle(
     emb=final_emb,
     node_to_idx=node_to_idx,
     focal_ccode=CHN_CCODE,
-    partners=partners,
+    partner_ccodes=partners,
 )
 chn_df = interventions_to_frame(chn_results)
 chn_df.to_csv(out_dir / "interventions_china.csv", index=False)

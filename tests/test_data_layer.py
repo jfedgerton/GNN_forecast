@@ -5,7 +5,7 @@ from pathlib import Path
 from gnn_forecast.data_layer import CanonicalDataConfig, load_canonical_multiplex_data
 
 
-FIXTURE_DIR = Path("tests/fixtures/tiny_processed")
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tiny_processed"
 
 
 def test_node_indexing_stable() -> None:

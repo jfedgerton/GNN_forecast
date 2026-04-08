@@ -78,7 +78,7 @@ if "ccode" not in nodes.columns:
     raise ValueError(f"nodes file must contain a 'ccode' column. Found: {list(nodes.columns)}")
 
 # IMPORTANT: this assumes nodes.csv ordering matches the embedding tensor node ordering.
-node_ccodes = [int(c) for c in nodes["ccode"].tolist()]
+node_ccodes = sorted([int(c) for c in nodes["ccode"].tolist()])
 node_to_idx = {cc: i for i, cc in enumerate(node_ccodes)}
 
 # Basic consistency check

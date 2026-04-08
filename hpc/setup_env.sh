@@ -79,7 +79,9 @@ PYG_WHEEL_URL="https://data.pyg.org/whl/torch-${TORCH_VER}+${CUDA_TAG}.html"
 echo "PyG wheel index: ${PYG_WHEEL_URL}"
 
 pip install torch_geometric
-pip install torch_scatter torch_sparse torch_cluster torch_spline_conv \
+# torch_spline_conv is excluded — it requires source build and is not
+# used by GCN/GraphSAGE/GAT encoders in this project.
+pip install torch_scatter torch_sparse torch_cluster \
     -f "${PYG_WHEEL_URL}"
 
 # ----------------------------------------------------------

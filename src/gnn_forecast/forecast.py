@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class EmbeddingAR(nn.Module):
@@ -22,16 +22,10 @@ class EmbeddingAR(nn.Module):
 
 
 def decode_edges(emb: torch.Tensor, threshold: float = 0.0) -> torch.Tensor:
-    """Inner product decoder to produce adjacency predictions."""
-    score = emb @ emb.T
+    """Cosine-similarity decoder to produce adjacency predictions."""
+    emb_norm = F.normalize(emb, p=2, dim=1)
+    score = emb_norm @ emb_norm.T
     return (score > threshold).float()
-
-
-@dataclass
-class ForecastConfig:
-    train_end_year: int = 2025
-    forecast_start_year: int = 2026
-    forecast_end_year: int = 2050
 
 
 def rollout_embeddings(model: EmbeddingAR, history: torch.Tensor, steps: int) -> torch.Tensor:
@@ -39,6 +33,8 @@ def rollout_embeddings(model: EmbeddingAR, history: torch.Tensor, steps: int) ->
     history: [num_nodes, seq_len, emb_dim]
     returns: [num_nodes, steps, emb_dim]
     """
+    if history.dim() != 3:
+        raise ValueError(f"Expected 3D history tensor [nodes, seq_len, emb_dim], got {history.dim()}D")
     seq = history.clone()
     preds = []
     for _ in range(steps):

@@ -12,10 +12,14 @@ def haversine_km(lat1, lon1, lat2, lon2):
     dlat = np.radians(lat2 - lat1)
     dlon = np.radians(lon2 - lon1)
     a = np.sin(dlat / 2) ** 2 + np.cos(np.radians(lat1)) * np.cos(np.radians(lat2)) * np.sin(dlon / 2) ** 2
-    return 2 * r * np.arcsin(np.sqrt(a))
+    return 2 * r * np.arcsin(np.clip(np.sqrt(a), 0.0, 1.0))
 
 
 def capital_distance_matrix(nodes: pd.DataFrame) -> pd.DataFrame:
+    required = {"ccode", "cap_lat", "cap_lon"}
+    missing = required - set(nodes.columns)
+    if missing:
+        raise ValueError(f"Nodes DataFrame missing required columns: {missing}")
     s = nodes.set_index("ccode")
     c = s.index.to_numpy()
     rows = []
@@ -30,6 +34,9 @@ def capital_distance_matrix(nodes: pd.DataFrame) -> pd.DataFrame:
 
 def residualize_ties_against_distance(edges: pd.DataFrame, distances: pd.DataFrame) -> pd.DataFrame:
     merged = edges.merge(distances, on=["source_ccode", "target_ccode"], how="left")
+    merged = merged.dropna(subset=["capital_distance_km"])
+    if len(merged) == 0:
+        raise ValueError("No edges remain after merging with distances — check that edge ccodes match distance ccodes")
     x = merged["capital_distance_km"].to_numpy()
     y = merged["tie"].to_numpy()
     x_aug = np.column_stack([np.ones_like(x), x])

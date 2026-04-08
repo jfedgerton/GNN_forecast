@@ -22,6 +22,8 @@ args = ap.parse_args()
 data_dir = args.data_dir
 start_year = int(args.start_year)
 end_year = int(args.end_year)
+if start_year > end_year:
+    raise ValueError(f"start_year ({start_year}) must be <= end_year ({end_year})")
 out_dir = Path(args.out_dir)
 
 # Ensure output directory exists

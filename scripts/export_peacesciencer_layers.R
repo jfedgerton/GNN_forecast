@@ -31,6 +31,7 @@ dy <- dy %>%
     ccode2 = as.integer(ccode2)
   ) %>%
   peacesciencer::add_capital_distance() %>%
+  filter(capdist > 0) %>%
   mutate(capdist = log(capdist))
 
 # -----------------------
@@ -225,9 +226,51 @@ if (requireNamespace("peacesciencer", quietly = TRUE)) {
   nodes_df <- nodes_df %>% left_join(cow_states, by = "ccode")
 }
 
-# Capital coordinates placeholder — add from cshapes if needed
-nodes_df$cap_lat <- NA_real_
-nodes_df$cap_lon <- NA_real_
+# Capital coordinates extracted from the COW capdist dataset.
+# The capdist data in peacesciencer contains lat1/lon1 and lat2/lon2 for each dyad.
+# We extract unique per-country coordinates from the ccode1 side.
+capdist_raw <- tryCatch(
+  peacesciencer::cow_capitals,
+  error = function(e) NULL
+)
+
+if (!is.null(capdist_raw) && "lat" %in% names(capdist_raw)) {
+  cap_coords <- capdist_raw %>%
+    transmute(ccode = as.integer(ccode), cap_lat = lat, cap_lon = lng) %>%
+    group_by(ccode) %>%
+    slice_tail(n = 1) %>%
+    ungroup()
+} else {
+  # Fallback: extract from the dyadic capdist dataset
+  capdist_dyadic <- tryCatch(
+    peacesciencer::cow_cap_dist,
+    error = function(e) NULL
+  )
+  if (!is.null(capdist_dyadic) && "lat1" %in% names(capdist_dyadic)) {
+    cap_coords <- capdist_dyadic %>%
+      transmute(ccode = as.integer(ccode1), cap_lat = lat1, cap_lon = lon1) %>%
+      distinct(ccode, .keep_all = TRUE)
+  } else {
+    # Last resort: use cshapes or generate from external data
+    warning("Could not find capital coordinate data in peacesciencer. ",
+            "Attempting to use countrycode package.")
+    if (requireNamespace("countrycode", quietly = TRUE)) {
+      cap_coords <- data.frame(ccode = all_ccodes) %>%
+        mutate(
+          iso3c = countrycode::countrycode(ccode, "cown", "iso3c", warn = FALSE)
+        )
+      # If countrycode doesn't provide lat/lon, fall back to NA
+      cap_coords$cap_lat <- NA_real_
+      cap_coords$cap_lon <- NA_real_
+      warning("Capital coordinates set to NA — populate manually or install cshapes.")
+    } else {
+      cap_coords <- data.frame(ccode = all_ccodes, cap_lat = NA_real_, cap_lon = NA_real_)
+      warning("Capital coordinates set to NA — install peacesciencer with capdist data.")
+    }
+  }
+}
+
+nodes_df <- nodes_df %>% left_join(cap_coords, by = "ccode")
 
 write_csv(nodes_df, file.path(out_dir, "nodes.csv"))
 

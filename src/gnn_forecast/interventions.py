@@ -45,6 +45,11 @@ def simulate_edge_toggle(
     add_if_missing: bool = True,
 ) -> List[InterventionResult]:
     res = []
+    if focal_ccode not in node_to_idx:
+        raise ValueError(f"Focal country code {focal_ccode} not found in node index")
+    missing_partners = [p for p in partner_ccodes if p not in node_to_idx]
+    if missing_partners:
+        raise ValueError(f"Partner country codes not found in node index: {missing_partners}")
     focal_idx = node_to_idx[focal_ccode]
     baseline = embeddedness_score(emb, focal_idx)
 
@@ -64,7 +69,8 @@ def simulate_edge_toggle(
             continue
 
         # Lightweight proxy: one-hop message passing from modified adjacency.
-        a = torch.tensor(adj2, dtype=emb.dtype, device=emb.device)
+        a = torch.zeros(adj2.shape[0], adj2.shape[1], dtype=emb.dtype, device=emb.device)
+        a[:] = torch.as_tensor(adj2, dtype=emb.dtype)
         deg = a.sum(1, keepdim=True).clamp(min=1.0)
         emb2 = a @ emb / deg
         delta = embeddedness_score(emb2, focal_idx) - baseline
@@ -118,7 +124,8 @@ def simulate_random_multi_edge_deletion(
                 adj2[focal_idx, j] = 0
                 adj2[j, focal_idx] = 0
 
-            a = torch.tensor(adj2, dtype=emb.dtype, device=emb.device)
+            a = torch.zeros(adj2.shape[0], adj2.shape[1], dtype=emb.dtype, device=emb.device)
+            a[:] = torch.as_tensor(adj2, dtype=emb.dtype)
             deg = a.sum(1, keepdim=True).clamp(min=1.0)
             emb2 = a @ emb / deg
             score_after = embeddedness_score(emb2, focal_idx)

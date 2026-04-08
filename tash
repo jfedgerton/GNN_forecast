@@ -1,0 +1,9 @@
+[33m5b40ce1[m[33m ([m[1;31morigin/main[m[33m)[m Merge pull request #5 from jfedgerton/codex/perform-code-audit-for-gnn-implementation
+[33mdcdbed7[m[33m ([m[1;31morigin/codex/perform-code-audit-for-gnn-implementation[m[33m)[m Add full audit report and fix intervention script argument bug
+[33m39fdca3[m Merge pull request #4 from jfedgerton/claude/multiplex-gnn-international-B8csT
+[33mb7bb835[m[33m ([m[1;31morigin/claude/multiplex-gnn-international-B8csT[m[33m)[m Add 23 isolation analysis tests and PA paper outline
+[33m78243b6[m Add greedy combinatorial edge search for isolation analysis
+[33m649692d[m Add isolation analysis: paired USA-China counterfactual visualization
+[33m5762755[m Add manuscript preparation infrastructure and detailed TODO
+[33m9c7ac5e[m Add egg-info to gitignore
+[33me91f39a[m Add dynamic multiplex temporal GNN pipeline with counterfactual simulation

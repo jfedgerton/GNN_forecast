@@ -1,0 +1,533 @@
+================================================================================
+MANUSCRIPT PREPARATION TODO — Political Analysis Submission
+Dynamic Multiplex GNN for Forecasting International Embedding Space
+================================================================================
+
+Last updated: 2026-03-09
+Repository: GNN_forecast
+
+================================================================================
+ENVIRONMENT & REPRODUCIBILITY
+================================================================================
+
+Python version: 3.11.14
+
+Core Python packages (with tested versions):
+  numpy         2.4.2
+  pandas        3.0.1
+  torch         2.10.0
+  scikit-learn  1.8.0
+  scipy         1.17.1
+  pytest        9.0.2
+
+Optional Python packages (not installed in current env, but supported):
+  torch-geometric    (any recent version — enables PyG GCNConv; falls back to
+                      custom GCN if missing)
+  umap-learn         (enables UMAP projections; falls back to PCA if missing)
+  matplotlib         (for figure generation — not currently used in pipeline,
+                      but the CSV outputs from visualization.py are ready to
+                      plot)
+
+R packages (for data export — scripts/export_peacesciencer_layers.R):
+  R version:   4.x recommended
+  dplyr
+  readr
+  fixest        (for fixed-effects residualization: feols)
+  peacesciencer (install via: remotes::install_github('svmiller/peacesciencer'))
+
+To reproduce the Python environment:
+  pip install numpy pandas torch scikit-learn scipy pytest
+  pip install -e .   # install gnn-forecast package in editable mode
+
+To run all tests:
+  python -m pytest tests/ -v
+
+================================================================================
+IMPLEMENTED (READY TO USE)
+================================================================================
+
+[x] Multiplex data pipeline (src/gnn_forecast/multiplex_data.py)
+    - 5-layer support: offensive alliances, defensive alliances, IGO, trade, DCA
+    - Automatic file discovery from data/processed/
+    - Missing-layer masking per year
+    - Degree-profile node features
+    - Tensor conversion for PyTorch
+
+[x] Tie-strength residualization (src/gnn_forecast/preprocessing.py)
+    - Python-side FE-proxy residualization (logistic for binary, ridge for continuous)
+    - Sender + receiver + year categorical features
+    - Optional contiguity feature
+    - Note: the R export script already produces FE-residualized layers via
+      fixest::feols, which is the preferred approach for the paper
+
+[x] Multiplex temporal GNN (src/gnn_forecast/multiplex_model.py)
+    - Per-layer GCN encoders (separate weights per layer)
+    - Learned attention-based layer aggregation (softmax over logits)
+    - GRU temporal model for next-period embedding prediction
+    - Inner-product edge decoder for link reconstruction
+    - Falls back to custom GCN if torch_geometric not installed
+
+[x] Training loop (src/gnn_forecast/training.py)
+    - Loss = MSE(embedding) + lambda_link * BCE(link) + lambda_smooth * MSE(smooth)
+    - Early stopping with patience
+    - Checkpoint saving (model weights, embeddings, diagnostics)
+    - Autoregressive forecast rollout
+
+[x] Counterfactual simulation (src/gnn_forecast/counterfactual.py)
+    - Single-edge knockouts and additions
+    - Full model forward pass (not 1-hop proxy)
+    - Batch ranking across partners x layers x operations
+    - 4 embeddedness metrics: mean cosine, centroid distance, major power
+      distance, kNN density
+    - Layer-level and overall summaries
+
+[x] Walk-forward backtesting (src/gnn_forecast/validation.py)
+    - Train on [start, split_year], test on (split_year, split_year + horizon]
+    - Reports embedding MSE, link prediction AUC, USA/China embeddedness
+    - Multiple split years supported
+    - Saves per-fold diagnostics
+
+[x] Multi-seed robustness (src/gnn_forecast/validation.py)
+    - Train with N different random seeds
+    - Reports variance in loss, layer weights, embeddedness metrics
+    - Saves summary CSV
+
+[x] Baseline comparisons (src/gnn_forecast/baselines.py)
+    - Static GNN (encode year t, linear map to year t+1, no temporal memory)
+    - Degree-AR (GRU on raw degree features, no graph encoding)
+    - Mean baseline (predict training-period mean)
+
+[x] Visualization / table generation (src/gnn_forecast/visualization.py)
+    - PCA projections of embeddings (with UMAP fallback)
+    - Embeddedness time series for focal states
+    - Layer weight comparison tables
+    - Loss curves
+    - Model Set 1 vs Model Set 2 comparison tables
+
+[x] Isolation analysis — paired USA/China edge effects
+    (src/gnn_forecast/isolation_analysis.py)
+    - Dual-focal simulation: perturb one edge, measure effects on BOTH
+      USA and China in a single forward pass
+    - Quadrant classification: which edges embed one power while isolating
+      the other (Q2 = USA isolated + China embedded, Q4 = reverse)
+    - Wedge rankings: edges with the most asymmetric USA-vs-China effects
+    - Layer-level heatmaps: which tie types are most consequential
+    - Multi-edge scenarios: user-defined bundles of simultaneous changes
+      (e.g., "India leaves US orbit: remove trade + alliance")
+    - Greedy combinatorial search: take top-k single edges per objective,
+      test all C(k,2) pairs + C(k,3) triples, measure interaction effects
+      (super-additive = synergy, sub-additive = redundancy)
+    - Outputs:
+      * dual_focal_all.csv             — all single-edge perturbation effects
+      * quadrant_summary.csv           — counts by quadrant x layer
+      * top_usa_isolating.csv          — top 30 edges that most isolate USA
+      * top_china_isolating.csv        — top 30 edges that most isolate China
+      * top_wedge_edges.csv            — top 30 most asymmetric edges
+      * top_pro_usa.csv / top_pro_china.csv
+      * layer_isolation_heatmap.csv    — per-layer aggregated effects
+      * multi_edge_scenarios.csv       — user-defined scenario results
+      * combos/combos_*.csv            — greedy combo results per objective
+      * combos/top_superadditive_combos.csv — strongest interaction effects
+    - Figures (matplotlib when available):
+      * scatter_usa_vs_china.png       — 4-quadrant scatter (core figure)
+      * heatmap_layer_isolation.png    — layer x metric heatmap
+      * bar_top_wedge_edges.png        — horizontal bar of asymmetric edges
+      * bar_multi_edge.png             — grouped bars for named scenarios
+      * interactions_*.png             — additive vs actual (synergy plots)
+
+[x] End-to-end pipeline scripts
+    - scripts/run_full_pipeline.py        (basic two-model-set run)
+    - scripts/run_manuscript_analysis.py  (full 10-step manuscript pipeline with
+      backtesting, multi-seed, baselines, counterfactuals, isolation analysis,
+      greedy combos, tables)
+
+[x] R export script (scripts/export_peacesciencer_layers.R)
+    - Separate offensive and defensive alliance layers
+    - IGO shared memberships
+    - Trade (smoothflow)
+    - DCA placeholder (loads from data/raw/dcas.csv if present)
+    - Contiguity export
+    - FE-residualized weighted versions via fixest::feols
+
+[x] Tests (46 passing)
+    tests/test_data_layer.py (2 tests):
+    - Data loading and node indexing
+    tests/test_multiplex_model.py (19 tests):
+    - Layer masking for missing years
+    - GCN layer (including empty graph)
+    - Layer aggregation (including all-masked case)
+    - Temporal GRU
+    - Full model encode + temporal
+    - Embeddedness metrics
+    - Tie-strength residualization (binary + continuous)
+    tests/test_isolation_analysis.py (23 tests):
+    - Dual-focal simulation (returns results, both operations, excludes
+      USA/China, specific partner filter, all result fields)
+    - DataFrame conversion and quadrant classification
+    - Ranking functions (top-N, ordering correctness)
+    - Layer heatmap aggregation
+    - Multi-edge simulation (named scenarios, result fields, DataFrame)
+    - Greedy combo search (returns results, interaction columns, all 4
+      objectives, size constraint, custom objectives, interaction math)
+    - Full pipeline (output files, skip_combos flag, with scenarios)
+    tests/test_network_utils.py (2 tests):
+    - Network construction + intervention tests
+
+[x] Paper outline (OUTLINE_political_analysis.txt)
+    - Full 8-section structure for Political Analysis submission
+    - Section-by-section word targets (~10,000 words main text)
+    - 8 figures + 5 tables inventory
+    - Key references list
+    - Downstream validation options (critical for PA acceptance)
+    - Appendix structure (8 sections)
+
+================================================================================
+YOU NEED TO DO (manual / requires external data)
+================================================================================
+
+--- DATA ACQUISITION ---
+
+[ ] Acquire DCA data (defense cooperation agreements)
+    Source: Kinne (2020) "Defense Cooperation Agreements and the Emergence of
+            a Global Security Network"
+    Format needed: CSV with columns [year, ccode1, ccode2, dca]
+    Place at: data/raw/dcas.csv
+    Then re-run: Rscript scripts/export_peacesciencer_layers.R
+    The R script will automatically detect and process it.
+
+[ ] Re-run R export script to generate separate offensive/defensive alliance files
+    The updated R script now produces:
+      - layer_offensive_alliances.csv / _weighted.csv
+      - layer_defensive_alliances.csv / _weighted.csv
+    Currently only the combined file exists. Run:
+      Rscript scripts/export_peacesciencer_layers.R
+    This requires R with peacesciencer and fixest installed.
+
+[ ] Verify contiguity data export
+    The R script now exports contiguity.csv. If you want to use Python-side
+    FE residualization as a robustness check, load this file and pass it as
+    the contiguity_map parameter to preprocessing.residualize_all_layers().
+
+--- RUNNING THE PIPELINE ---
+
+[ ] Run the full manuscript analysis
+    After data is in place:
+      python scripts/run_manuscript_analysis.py \
+        --data-dir data/processed \
+        --out-dir outputs/manuscript \
+        --start-year 1950 \
+        --end-year 2014 \
+        --epochs 200 \
+        --n-seeds 5
+
+    For a quick test run (fewer epochs, limited counterfactuals):
+      python scripts/run_manuscript_analysis.py \
+        --data-dir data/processed \
+        --out-dir outputs/test_run \
+        --start-year 1950 \
+        --end-year 2000 \
+        --epochs 20 \
+        --cf-max-partners 20 \
+        --skip-multiseed \
+        --skip-baselines
+
+--- VALIDATION (for manuscript credibility) ---
+
+[ ] Walk-forward backtesting
+    The pipeline runs this automatically if --skip-backtest is not set.
+    Default splits: every 10 years from start+20 to end-5.
+    Key output: outputs/manuscript/backtest/backtest_summary.csv
+    Report:
+      - Out-of-sample embedding prediction MSE by test year
+      - Out-of-sample link prediction AUC by test year
+      - Whether layer weights are stable across folds
+
+[ ] Multi-seed robustness
+    Pipeline runs this automatically with --n-seeds 5 (or more).
+    Key output: outputs/manuscript/multiseed/multi_seed_results.csv
+    Report:
+      - Variance in final loss across seeds
+      - Variance in layer weights across seeds
+      - Variance in USA/China embeddedness metrics across seeds
+    PA reviewers will want to see that results are not seed-dependent.
+
+[ ] Baseline comparisons
+    Pipeline runs this automatically.
+    Key output: outputs/manuscript/baselines/baseline_comparison.csv
+    Report:
+      - Does the multiplex temporal GNN outperform static GNN (no memory)?
+      - Does it outperform degree-AR (no graph structure)?
+      - Does it outperform mean baseline (no learning)?
+    This demonstrates the value-added of each model component.
+
+[ ] Sensitivity analysis (manual — vary hyperparameters)
+    Run the pipeline multiple times varying:
+      --seq-len 3 5 10
+      --emb-dim 16 32 64
+      --hidden-dim 32 64 128
+      --lr 5e-4 1e-3 5e-3
+    Report whether counterfactual rankings are stable across hyperparameters.
+    This is important for PA because the field is skeptical of ML method choices.
+
+--- MODEL SET COMPARISON ---
+
+[ ] Compare Model Set 1 (raw) vs Model Set 2 (strength-weighted)
+    The pipeline trains both automatically.
+    Key outputs:
+      - outputs/manuscript/tables/model_set_comparison.csv
+      - outputs/manuscript/tables/layer_weights.csv
+    Substantive questions:
+      - Do raw and weighted models give different layer weight orderings?
+      - Do they give different embeddedness trajectories for USA/China?
+      - Do they produce different counterfactual rankings?
+    This is a core finding for the paper: whether "opportunity-adjusted"
+    ties tell a different story than raw ties.
+
+--- COUNTERFACTUAL ANALYSIS ---
+
+[ ] Full counterfactual for USA and China
+    Key outputs:
+      - outputs/manuscript/counterfactual/cf_usa_raw.csv
+      - outputs/manuscript/counterfactual/cf_china_raw.csv
+      - outputs/manuscript/counterfactual/cf_usa_raw_top30.csv
+      - outputs/manuscript/counterfactual/cf_china_raw_top30.csv
+      - outputs/manuscript/counterfactual/cf_usa_raw_by_layer.csv
+    Plus matching weighted-model versions.
+    Use --cf-max-partners 0 for the full run (all partners).
+    This is slow for 200+ states x 5 layers x 2 operations but produces
+    the main results tables.
+
+--- ISOLATION ANALYSIS (USA vs CHINA) ---
+
+[ ] Run the isolation analysis (runs automatically in pipeline step 9)
+    This is a paired analysis: each edge perturbation is measured for its
+    effect on BOTH USA and China embeddedness simultaneously.
+
+    Key outputs:
+      outputs/manuscript/isolation_raw/
+        dual_focal_all.csv              — every single-edge perturbation
+        scatter_usa_vs_china.png        — the core 4-quadrant figure
+        heatmap_layer_isolation.png     — which layers matter most
+        bar_top_wedge_edges.png         — most asymmetric edges
+        top_usa_isolating.csv           — edges that most isolate USA
+        top_china_isolating.csv         — edges that most isolate China
+        top_wedge_edges.csv             — largest USA-vs-China asymmetry
+        multi_edge_scenarios.csv        — policy scenario bundles
+
+    Greedy combo search outputs:
+      outputs/manuscript/isolation_raw/combos/
+        combos_usa_isolating.csv        — edge combos that most isolate USA
+        combos_china_isolating.csv      — edge combos that most isolate China
+        combos_pro_usa_wedge.csv        — combos favoring USA over China
+        combos_pro_china_wedge.csv      — combos favoring China over USA
+        top_superadditive_combos.csv    — combos with strongest interaction effects
+        interactions_*.png              — additive vs actual plots (synergy detection)
+
+    Computational cost estimate (for ~200 states, 5 layers):
+      Single-edge sweep: ~2,000 perturbations              — minutes
+      Greedy combos (top-10, pairs+triples):
+        4 objectives × (C(10,2) + C(10,3)) = 4 × 165 = 660 — minutes
+      Named multi-edge scenarios: one per scenario          — seconds
+      TOTAL: ~15-30 minutes on CPU, much less on GPU
+
+    CLI flags:
+      --combo-top-k 10       # top-k edges to compose (default 10)
+      --combo-max-size 3     # max edges per combo (default 3)
+      --skip-combos          # skip greedy combo search
+      --skip-isolation       # skip entire isolation analysis
+
+    Interpretation guide:
+      - "wedge_cosine" = USA_delta - China_delta
+        Positive = edge change favors USA
+        Negative = edge change favors China
+      - "usa_interaction" / "chn_interaction" = combo effect - sum(individual effects)
+        Positive = super-additive (edges reinforce each other)
+        Negative = sub-additive (edges are redundant)
+      - Quadrant Q2 (USA isolated, China embedded) is the "worst case for US"
+      - Quadrant Q4 (USA embedded, China isolated) is the "worst case for China"
+      - The scatter plot is the key manuscript figure: it shows the full
+        landscape of edge effects on both powers simultaneously
+
+[ ] Define additional multi-edge scenarios
+    The pipeline ships with 4 example scenarios. Add more based on your
+    substantive knowledge. Edit the multi_scenarios dict in
+    scripts/run_manuscript_analysis.py. Examples to consider:
+      - "US loses Philippines alliance"
+      - "China gains ASEAN trade bloc"
+      - "Russia-China alliance deepening"
+      - "EU trade decoupling from China"
+    Each scenario requires one forward pass — negligible cost.
+
+--- MANUSCRIPT WRITING ---
+
+[ ] Theory section
+    Motivate: why multiplex network structure matters for understanding
+    international embeddedness. Key cites:
+      - Cranmer & Desmarais (various) — network analysis in IR
+      - Dorussen & Ward — IGO networks
+      - Maoz — multiplex international networks
+      - Hafner-Burton et al. — network approach to international politics
+      - Kinne — DCAs and security networks
+      - Ward et al. — network forecasting
+
+[ ] Method section
+    Include:
+      - Architecture diagram (per-layer GCN → attention aggregation → GRU)
+      - Loss function derivation
+      - Tie-strength residualization formula
+      - Handling of missing layers
+      - Training procedure (walk-forward, early stopping)
+    Length: PA methods sections are typically 3-5 pages.
+
+[ ] Results section structure
+    Suggested order:
+      1. Layer coverage and data summary
+      2. Embedding space visualization (PCA projections over time)
+      3. USA and China embeddedness trajectories
+      4. Learned layer weights (which layers predict most?)
+      5. Model Set 1 vs 2 comparison
+      6. Counterfactual rankings (main results tables)
+      7. Cross-layer comparison (offensive vs defensive vs trade vs IGO vs DCA)
+      8. USA vs China isolation scatter (4-quadrant figure — core finding)
+      9. Top isolating edges and wedge edges (asymmetric leverage points)
+     10. Edge combination interactions (which bundles are super-additive?)
+     11. Named policy scenarios (India, Turkey, Brazil, South Korea, etc.)
+
+[ ] Discussion section
+    Policy-relevant questions:
+      - Which ties could the US cultivate to maintain embeddedness?
+      - Where is China gaining embeddedness most rapidly?
+      - Are alliance ties or trade ties more consequential for embeddedness?
+      - Does opportunity-adjusting change the story?
+
+--- REPLICATION ARCHIVE ---
+
+[ ] Prepare Dataverse replication package
+    PA requires a replication archive. Include:
+      - All raw data (or links to peacesciencer/Kinne sources)
+      - All code (this repository)
+      - A master script that reproduces everything
+      - Environment specification (requirements.txt or pyproject.toml)
+      - README for the replication archive
+    The run_manuscript_analysis.py script serves as the master script.
+
+[ ] Create requirements.txt for exact reproducibility
+    Generate: pip freeze > requirements.txt
+    Or maintain a minimal list:
+      numpy==2.4.2
+      pandas==3.0.1
+      torch==2.10.0
+      scikit-learn==1.8.0
+
+================================================================================
+OPTIONAL IMPROVEMENTS (if time permits / reviewer requests)
+================================================================================
+
+[ ] Upgrade GNN encoder to GAT or GraphSAGE
+    The LayerEncoder class already supports swapping architectures.
+    Compare GCN vs GAT vs GraphSAGE as a robustness check.
+
+[ ] Add uncertainty quantification
+    Options: MC dropout, deep ensembles, conformal prediction.
+    Needed if reviewers ask for confidence intervals on counterfactuals.
+
+[ ] Temporal attention instead of GRU
+    Replace TemporalGRU with a self-attention mechanism.
+    Compare: does temporal attention learn different historical weightings?
+
+[ ] Multi-task decoder
+    Add per-layer link prediction heads in addition to embedding prediction.
+    Would allow measuring which layers are better predicted.
+
+[ ] Longer forecast horizons with credibility bounds
+    The README warns about >25-year forecasts. If you forecast to 2050,
+    discuss extrapolation uncertainty honestly.
+
+[ ] Walk-forward with expanding window vs fixed window
+    Current implementation uses expanding training window.
+    Add option for fixed-length sliding window as robustness check.
+
+================================================================================
+COMMANDS QUICK REFERENCE
+================================================================================
+
+# Install environment
+pip install numpy pandas torch scikit-learn scipy pytest
+pip install -e .
+
+# Run tests
+python -m pytest tests/ -v
+
+# Export data from R (requires R + peacesciencer + fixest)
+Rscript scripts/export_peacesciencer_layers.R
+
+# Quick test run (skip heavy steps)
+python scripts/run_manuscript_analysis.py \
+  --data-dir data/processed --out-dir outputs/test \
+  --start-year 1950 --end-year 2000 --epochs 20 \
+  --cf-max-partners 20 --skip-multiseed --skip-baselines --skip-combos
+
+# Full manuscript run
+python scripts/run_manuscript_analysis.py \
+  --data-dir data/processed --out-dir outputs/manuscript \
+  --start-year 1950 --end-year 2014 --epochs 200 --n-seeds 10
+
+# Full run with larger combo search (top-15 edges, up to size 4)
+python scripts/run_manuscript_analysis.py \
+  --data-dir data/processed --out-dir outputs/manuscript \
+  --start-year 1950 --end-year 2014 --epochs 200 --n-seeds 10 \
+  --combo-top-k 15 --combo-max-size 4
+
+# Inspect isolation analysis outputs
+ls outputs/manuscript/isolation_raw/
+ls outputs/manuscript/isolation_raw/combos/
+cat outputs/manuscript/isolation_raw/top_wedge_edges.csv
+cat outputs/manuscript/isolation_raw/combos/top_superadditive_combos.csv
+
+# Inspect other outputs
+ls outputs/manuscript/tables/
+ls outputs/manuscript/counterfactual/
+cat outputs/manuscript/backtest/backtest_summary.csv
+
+================================================================================
+FILE INVENTORY
+================================================================================
+
+Source code (src/gnn_forecast/):
+  __init__.py             Package exports
+  data_peacesciencer.py   Legacy peacesciencer data loader
+  data_layer.py           Canonical multiplex data loader
+  network_construction.py Distance-based residualization (legacy)
+  preprocessing.py        FE-proxy tie-strength residualization (new)
+  multiplex_data.py       5-layer multiplex data pipeline (new)
+  multiplex_model.py      Multiplex temporal GNN model (new)
+  training.py             Training loop with multi-loss (new)
+  forecast.py             Legacy AR forecaster
+  counterfactual.py       Full counterfactual simulation (new)
+  validation.py           Backtesting and multi-seed evaluation (new)
+  visualization.py        Table and figure data generation (new)
+  baselines.py            Baseline models for comparison (new)
+  isolation_analysis.py   Paired USA/China isolation, greedy combos, figures (new)
+  interventions.py        Legacy intervention module
+  pipeline.py             Legacy pipeline orchestration
+
+Scripts:
+  export_peacesciencer_layers.R  R data export (updated for 5 layers)
+  run_full_pipeline.py           Basic two-model-set pipeline
+  run_manuscript_analysis.py     Full manuscript analysis pipeline (new)
+  run_research_pipeline.py       Legacy pipeline runner
+  train_forecast_and_intervene.py Legacy train + intervene
+  rebuild_temporal_layers_debug.py Layer diagnostics
+
+Tests:
+  test_data_layer.py          Canonical data loading tests (2 tests)
+  test_multiplex_model.py     Multiplex GNN + pipeline tests (19 tests)
+  test_isolation_analysis.py  Isolation analysis + greedy combos (23 tests, new)
+  test_network_utils.py       Network construction + intervention tests (2 tests)
+
+Manuscript:
+  OUTLINE_political_analysis.txt  Full PA paper outline with section structure
+
+Data:
+  data/processed/           Layer CSVs from R export
+  tests/fixtures/           Small test fixtures

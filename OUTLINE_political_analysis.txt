@@ -1,0 +1,453 @@
+================================================================================
+PAPER OUTLINE — Political Analysis Submission
+Dynamic Multiplex GNN for Forecasting International Embedding Space
+================================================================================
+
+Target journal: Political Analysis
+Word limit: ~10,000 words (main text), unlimited appendix
+Style: Quantitative methods + substantive IR application
+
+================================================================================
+TITLE OPTIONS
+================================================================================
+
+Option A: "Multiplex Network Embeddings and the Geometry of Great Power
+           Competition: A Graph Neural Network Approach"
+
+Option B: "Who Is Embedded? Forecasting International Network Position
+           with Multiplex Temporal Graph Neural Networks"
+
+Option C: "Strategic Leverage in the International Multiplex: Identifying
+           Asymmetric Edge Effects with Graph Neural Networks"
+
+================================================================================
+ABSTRACT (~150 words)
+================================================================================
+
+- Problem: understanding which bilateral ties most affect a state's
+  structural position in the international system
+- Gap: existing network approaches are single-layer, static, or lack
+  counterfactual machinery
+- Contribution: multiplex temporal GNN that jointly encodes 5 relational
+  layers (offensive alliances, defensive alliances, IGOs, trade, DCAs),
+  learns cross-layer attention weights, and produces state-level
+  embeddings that capture structural position
+- Key innovation: dual-focal counterfactual framework that simultaneously
+  measures how each edge perturbation affects both USA and China, enabling
+  identification of "wedge" edges with asymmetric leverage
+- Finding preview: [fill after running the model — e.g., "trade ties with
+  middle powers produce the largest asymmetric effects, and certain edge
+  combinations exhibit super-additive isolation dynamics"]
+- Broader impact: the method generalizes to any multiplex network setting
+  where structural position matters
+
+================================================================================
+1. INTRODUCTION (1,500 words)
+================================================================================
+
+1.1  Motivating puzzle
+     - US-China competition is increasingly understood as a contest over
+       structural position — who is more "embedded" in the international
+       order?
+     - But "embeddedness" is a multidimensional concept: alliance networks,
+       trade networks, institutional networks, and security cooperation
+       networks all contribute differently
+     - Existing analyses treat these layers separately or aggregate them
+       crudely — we need a method that learns how they interact
+
+1.2  What this paper does
+     - Introduces a multiplex temporal GNN architecture
+     - Learns cross-layer attention weights: which layers matter most for
+       predicting future structural position?
+     - Produces an embedding space where proximity = structural similarity
+     - Enables counterfactual analysis: "what if edge X were removed?"
+     - Key methodological innovation: dual-focal counterfactuals that
+       measure effects on both USA and China simultaneously, revealing
+       asymmetric "wedge" edges
+
+1.3  Preview of findings
+     [Fill after running — structure as 3 bullet points]
+
+1.4  Contribution to the literature
+     - To PA: new method (multiplex temporal GNN) with clear utility
+     - To IR: substantive findings about which ties drive embeddedness
+     - To network analysis: cross-layer attention as interpretable weights
+     - To policy: identification of strategic leverage points
+
+================================================================================
+2. THEORY: EMBEDDEDNESS IN MULTIPLEX NETWORKS (1,500 words)
+================================================================================
+
+2.1  Network embeddedness as structural power
+     - Hafner-Burton et al. (2009): network approach to international politics
+     - Embeddedness ≠ centrality; it captures structural similarity and
+       redundancy of position
+     - Why position matters: states with similar structural positions face
+       similar constraints and opportunities
+
+2.2  The multiplex dimension
+     - Maoz (2010): international networks are inherently multiplex
+     - Different layers encode different kinds of interdependence
+     - Theoretical expectation: some layers reinforce each other (alliance +
+       trade = deep integration), others may substitute (IGO membership as
+       alternative to bilateral alliance)
+     - The GNN's learned attention weights provide empirical traction on
+       which layers matter most
+
+2.3  Temporal dynamics
+     - International networks evolve: alliances form and dissolve, trade
+       patterns shift, institutions expand
+     - Static snapshots miss the trajectory — a state gaining embedding
+       is substantively different from one losing it
+     - The GRU temporal module captures this trajectory explicitly
+
+2.4  Dual-focal counterfactuals: a framework for strategic analysis
+     - Traditional counterfactuals ask: "how does removing edge X affect
+       state A?"
+     - Our framework asks: "how does removing edge X affect state A AND
+       state B simultaneously?"
+     - This enables identification of:
+       * Wedge edges: ties where the effect is asymmetric (helps one, hurts
+         the other)
+       * Leverage points: ties whose removal/addition maximally shifts
+         relative position
+       * Synergistic bundles: sets of edges with super-additive effects
+
+2.5  Hypotheses (optional — PA papers can be exploratory)
+     H1: Trade ties with middle powers have larger embeddedness effects
+         than alliance ties (because trade networks are denser and more
+         asymmetric)
+     H2: Edge effects are non-additive — losing multiple ties to the same
+         partner produces super-additive isolation
+     H3: Opportunity-adjusted (residualized) ties tell a different story
+         than raw ties — some states appear embedded only because of
+         structural opportunity, not genuine integration
+
+================================================================================
+3. DATA (1,000 words)
+================================================================================
+
+3.1  Layer descriptions
+     - Offensive alliances (COW, 1816–2014): military pacts with offensive
+       provisions
+     - Defensive alliances (COW, 1816–2014): mutual defense commitments
+     - IGO co-memberships (COW, ~1870–2014): shared institutional ties
+     - Trade (COW smoothflow / Barbieri, ~1870–2014): bilateral trade flows
+     - DCAs (Kinne 2020, ~1980–2014): defense cooperation agreements
+       (non-alliance security ties)
+
+     Note: alliance data extends back to 1816, giving over a century of
+     alliance-only dynamics before trade and IGO data enter. The model's
+     missing-layer masking handles this gracefully.
+
+3.2  Temporal coverage and missingness
+     - Table: layer × year range matrix showing coverage
+     - Discussion of how missing layers are masked (zero attention weight
+       for unavailable layers in a given year)
+     - How learned weights may shift as layers become available
+
+3.3  Tie-strength residualization
+     - Two model sets: raw ties vs FE-residualized ties
+     - Residualization removes structural opportunity (sender + receiver +
+       year fixed effects) via logistic (binary layers) or ridge
+       (continuous layers) regression
+     - Interpretation: raw = "does the tie exist?", residualized = "is the
+       tie stronger/weaker than structural factors predict?"
+
+3.4  Summary statistics
+     - Table: layer × {n_edges, density, mean_weight, years} for most
+       recent snapshot
+     - Figure: edge count over time per layer (shows when layers enter)
+
+================================================================================
+4. METHOD (2,000 words)
+================================================================================
+
+4.1  Architecture overview
+     - Figure 1: Architecture diagram
+       Per-layer GCN → Attention Aggregation → GRU → Embedding Prediction
+     - Input: multiplex snapshot at time t (5 adjacency matrices + node
+       features)
+     - Output: predicted embedding vector for each state at time t+1
+
+4.2  Per-layer GCN encoder
+     - Each layer gets its own 2-layer GCN (with ReLU, dropout)
+     - Handles variable density and missing layers via masking
+     - Custom sparse GCN implementation (no PyG dependency required)
+
+4.3  Attention-based layer aggregation
+     - Learned softmax attention weights over available layers
+     - Masked softmax: layers unavailable in a given year get zero weight
+     - Weights are interpretable: which layer types does the model rely on
+       most for predicting future embeddings?
+
+4.4  Temporal GRU
+     - Sequence of snapshot embeddings → GRU → predicted next embedding
+     - Captures how structural position evolves over time
+     - Configurable sequence length (default: 5 years)
+
+4.5  Training
+     - Multi-component loss: MSE on predicted vs actual embeddings +
+       optional contrastive and stability terms
+     - Walk-forward training: train on years up to t, validate on t+1
+     - Early stopping on validation loss
+     - Multi-seed evaluation for stability
+
+4.6  Counterfactual machinery
+     - Edge perturbation: remove or add edges for a specific partner in a
+       specific layer
+     - Forward pass with modified adjacency → counterfactual embedding
+     - Embeddedness metrics: mean cosine similarity, centroid distance,
+       k-NN density, mean pairwise distance
+
+4.7  Dual-focal counterfactuals
+     - Innovation: perturb one edge, measure Δ for BOTH USA and China
+     - Four quadrants:
+       Q1: both more embedded (shared benefit)
+       Q2: USA isolated, China embedded (strategic threat to US)
+       Q3: both isolated (shared cost)
+       Q4: USA embedded, China isolated (strategic threat to China)
+     - Wedge = Δ_USA - Δ_China (positive = favors USA)
+
+4.8  Greedy combinatorial search
+     - Problem: testing all edge combinations is exponential
+     - Solution: select top-k single edges per objective, test C(k,2) pairs
+       + C(k,3) triples
+     - Interaction effect = actual combo effect − sum of individual effects
+       * Positive interaction = super-additive (synergy: edges reinforce)
+       * Negative interaction = sub-additive (redundancy: edges overlap)
+     - Computational cost: ~660 forward passes for k=10, max_size=3,
+       4 objectives — minutes on CPU
+
+================================================================================
+5. VALIDATION (1,000 words)
+================================================================================
+
+5.1  Walk-forward backtesting
+     - Train on 1816–t, predict t+1, evaluate MSE
+     - Compare across expanding windows
+     - Key metric: does prediction error decrease as more data is available?
+
+5.2  Baseline comparisons
+     - Static GNN (no temporal memory): does the GRU add value?
+     - Degree-AR (no graph structure): does the GCN add value?
+     - Mean baseline (no learning): does the model learn anything?
+     - Table: MSE comparison across all baselines
+
+5.3  Multi-seed stability
+     - 10 random initializations: how stable are learned weights and
+       counterfactual rankings?
+     - Report: Spearman correlation of counterfactual rankings across seeds
+
+5.4  *** DOWNSTREAM VALIDATION (CRITICAL FOR PA) ***
+     - This is the section that distinguishes a strong PA paper from a
+       desk reject. Options (implement at least one):
+
+     Option A: Predict observable outcomes
+       - Use predicted embeddedness at time t to predict MID onset at t+1
+       - Logistic regression: P(MID_ij,t+1) ~ embeddedness_i,t + controls
+       - Shows the embedding captures something causally relevant
+
+     Option B: Predict alliance formation
+       - Use predicted embedding proximity at t to predict new alliance
+         formation at t+1
+       - Shows the embedding space captures structural incentives
+
+     Option C: Predict trade growth
+       - States predicted to become more embedded also experience trade
+         growth?
+       - Weaker causal claim but easier to implement
+
+     Option D: Comparison to network centrality
+       - When do GNN embeddedness rankings diverge from degree centrality
+         or eigenvector centrality?
+       - Show that the divergence cases are substantively interesting
+         (e.g., states with high centrality but low GNN embeddedness are
+         "superficially connected" — many ties but structurally peripheral)
+       - This doesn't require external outcome data
+
+     RECOMMENDATION: Implement Option D first (no external data needed),
+     then Option A or B if data is available. Option D directly addresses
+     the "why not just use centrality?" critique.
+
+================================================================================
+6. RESULTS (2,500 words)
+================================================================================
+
+6.1  Learned layer weights
+     - Table: attention weights per layer (both raw and residualized models)
+     - Key question: which layers does the model rely on most?
+     - Compare raw vs residualized: does opportunity-adjusting change the
+       layer importance ordering?
+     - Discuss temporal variation: do weights shift as layers enter/exit?
+
+6.2  Embedding space visualization
+     - Figure: PCA projection of embedding space for most recent year
+     - Color by region or major power status
+     - Annotate USA, China, and key middle powers
+     - Time series: how do USA and China move through the space over decades?
+
+6.3  Embeddedness trajectories
+     - Figure: USA and China embeddedness (mean cosine similarity) over time
+     - Key narrative: is China's trajectory converging with or diverging
+       from the US?
+     - Model Set 1 vs 2 comparison: does residualization change the story?
+
+6.4  The isolation landscape (CORE FIGURE)
+     - Figure: 4-quadrant scatter plot (USA Δ cosine vs China Δ cosine)
+     - Each point = one edge perturbation (partner × layer × operation)
+     - Color by layer, shape by operation (add vs remove)
+     - Annotate the most extreme wedge edges
+     - Discussion: which quadrants are most populated? Are most edges
+       symmetric (Q1 or Q3) or asymmetric (Q2 or Q4)?
+
+6.5  Layer-level analysis
+     - Figure: heatmap (layer × {USA effect, China effect, wedge})
+     - Which layer types produce the most asymmetric effects?
+     - Are alliance removals more consequential than trade removals, or
+       vice versa?
+
+6.6  Top wedge edges
+     - Table: top 20 edges with largest absolute wedge
+     - For each: partner country, layer, operation, USA Δ, China Δ, wedge
+     - Substantive interpretation: why are these edges asymmetric?
+
+6.7  Edge combination interactions
+     - Table: top 10 super-additive combinations
+     - Key finding: which edge bundles have synergistic effects?
+     - Example narrative: "Losing India's trade tie alone reduces US
+       embeddedness by X; losing India's defense alliance alone reduces it
+       by Y; losing both reduces it by Z > X+Y, indicating that trade and
+       security ties to India are complementary anchors of US structural
+       position"
+     - Figure: additive vs actual scatter (synergy plot)
+
+6.8  Policy scenarios
+     - Table: named multi-edge scenario results
+     - Scenarios should map to real-world policy discussions:
+       * "India leaves US orbit" (remove trade + alliance)
+       * "Turkey realigns toward China" (swap edges)
+       * "AUKUS deepens" (add defense edges)
+       * "Belt and Road expansion" (add China trade edges)
+
+================================================================================
+7. DISCUSSION (1,000 words)
+================================================================================
+
+7.1  What the model tells us about great power competition
+     - Is competition primarily about trade networks, alliance networks,
+       or institutional networks?
+     - Are there "pivot states" whose alignment shifts the balance?
+     - Is the current trajectory toward bipolarity, multipolarity, or
+       continued US hegemony?
+
+7.2  Methodological contributions
+     - Multiplex temporal GNN as general tool for IR
+     - Dual-focal counterfactuals as framework for comparative analysis
+     - Greedy combo search as scalable approach to interaction effects
+     - Learned attention weights as interpretable layer importance
+
+7.3  Limitations
+     - Model-based counterfactuals, not causally identified
+     - Layer coverage varies by time period
+     - DCA data is recent — limits temporal analysis of security cooperation
+     - Embedding space is learned, not observed — interpretation requires
+       care
+     - Computational cost of full counterfactual sweep
+
+7.4  Future directions
+     - Extend to directed networks (not just undirected ties)
+     - Add more layers (arms transfers, diplomatic exchanges, cyber)
+     - Uncertainty quantification (MC dropout, conformal prediction)
+     - Apply to other dyadic competition contexts (India-Pakistan,
+       Saudi-Iran)
+
+================================================================================
+8. CONCLUSION (500 words)
+================================================================================
+
+- Restate the contribution: first multiplex temporal GNN for IR with
+  dual-focal counterfactual framework
+- Key empirical finding: [fill after running]
+- Policy implication: [fill after running]
+- The method is general — applicable wherever structural network position
+  matters (trade policy, alliance management, institutional design)
+
+================================================================================
+APPENDIX
+================================================================================
+
+A. Full counterfactual tables (all partners × all layers)
+B. Multi-seed stability analysis (rank correlations across seeds)
+C. Hyperparameter sensitivity (seq_len, emb_dim, hidden_dim, lr)
+D. Comparison to network centrality measures (if not in main text)
+E. Additional embedding space visualizations (multiple years)
+F. Model architecture details and loss function derivation
+G. Greedy combo search: full results for all objectives
+H. R export script documentation and data provenance
+
+================================================================================
+FIGURES AND TABLES INVENTORY
+================================================================================
+
+Main text (target: 6-8 figures, 3-5 tables):
+
+  Figure 1: Architecture diagram (per-layer GCN → attention → GRU)
+  Figure 2: PCA embedding space projection (annotated)
+  Figure 3: USA and China embeddedness trajectories over time
+  Figure 4: Isolation scatter — 4-quadrant USA vs China (CORE FIGURE)
+  Figure 5: Layer-level heatmap (which layers are most consequential)
+  Figure 6: Top wedge edges bar chart
+  Figure 7: Combo interaction scatter (additive vs actual)
+  Figure 8: Policy scenario grouped bar chart
+
+  Table 1: Data summary (layer × coverage × density)
+  Table 2: Learned attention weights (raw vs residualized)
+  Table 3: Baseline comparison (MSE by model type)
+  Table 4: Top 20 wedge edges
+  Table 5: Top 10 super-additive edge combinations
+
+================================================================================
+ESTIMATED PAGE COUNT
+================================================================================
+
+  Introduction:       3 pages
+  Theory:             3 pages
+  Data:               2 pages
+  Method:             4 pages
+  Validation:         2 pages
+  Results:            5 pages
+  Discussion:         2 pages
+  Conclusion:         1 page
+  References:         2 pages
+  Appendix:           5-10 pages
+  TOTAL:              ~24-30 pages (double-spaced, PA format)
+
+================================================================================
+KEY REFERENCES
+================================================================================
+
+Cranmer, S. & Desmarais, B. (2011). "Inferential network analysis with
+  exponential random graph models." Political Analysis.
+Cranmer, S. & Desmarais, B. (2016). "A critique of dyadic design."
+  International Studies Quarterly.
+Dorussen, H. & Ward, H. (2008). "Intergovernmental organizations and the
+  Kantian peace." Journal of Conflict Resolution.
+Hafner-Burton, E., Kahler, M. & Montgomery, A. (2009). "Network analysis
+  for international relations." International Organization.
+Kinne, B. (2020). "Defense cooperation agreements and the emergence of a
+  global security network." International Organization.
+Maoz, Z. (2010). Networks of Nations: The Evolution, Structure, and
+  Impact of International Networks. Cambridge.
+Ward, M., Ahlquist, J. & Rozenas, A. (2013). "Gravity's rainbow: a
+  dynamic latent space model for the world trade network." Network
+  Science.
+Kipf, T. & Welling, M. (2017). "Semi-supervised classification with
+  graph convolutional networks." ICLR.
+
+Additional:
+Barbieri, K. et al. (2009). "Trading data." Conflict Management and
+  Peace Science.
+Gibler, D. (2009). International Military Alliances, 1648-2008. CQ Press.
+Pevehouse, J. et al. (2004). "The COW-2 International Organizations
+  Dataset." Conflict Management and Peace Science.

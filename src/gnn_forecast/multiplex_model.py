@@ -29,54 +29,9 @@ except ImportError:
 # ---------------------------------------------------------------
 # Fallback GCN layer when torch_geometric is not available
 # ---------------------------------------------------------------
-class SimpleGCNLayer(nn.Module):
-    """Minimal GCN layer using sparse adjacency multiplication.
-
-    Implements: H' = D^{-1/2} A D^{-1/2} H W
-    Falls back to this when torch_geometric is unavailable.
-    """
-    def __init__(self, in_dim: int, out_dim: int):
-        super().__init__()
-        self.weight = nn.Linear(in_dim, out_dim, bias=True)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        edge_index: torch.LongTensor,
-        edge_weight: Optional[torch.Tensor] = None,
-        num_nodes: Optional[int] = None,
-    ) -> torch.Tensor:
-        if num_nodes is None:
-            num_nodes = x.size(0)
-
-        # Build sparse adjacency with self-loops
-        if edge_index.numel() == 0:
-            return self.weight(x)
-
-        # Add self-loops
-        self_loops = torch.arange(num_nodes, device=x.device).unsqueeze(0).repeat(2, 1)
-        ei = torch.cat([edge_index, self_loops], dim=1)
-
-        if edge_weight is not None:
-            ew = torch.cat([edge_weight, torch.ones(num_nodes, device=x.device)])
-        else:
-            ew = torch.ones(ei.size(1), device=x.device)
-
-        # Symmetric normalization
-        row, col = ei[0], ei[1]
-        deg = torch.zeros(num_nodes, device=x.device)
-        deg.scatter_add_(0, row, ew)
-        deg_inv_sqrt = deg.pow(-0.5)
-        deg_inv_sqrt[deg_inv_sqrt == float("inf")] = 0.0
-        norm = deg_inv_sqrt[row] * ew * deg_inv_sqrt[col]
-
-        # Sparse message passing
-        out = torch.zeros_like(x)
-        src_features = self.weight(x)
-        for i in range(ei.size(1)):
-            out[row[i]] += norm[i] * src_features[col[i]]
-
-        return out
+# Note: an earlier non-vectorized SimpleGCNLayer (Python for-loop variant)
+# was archived to archive/dead_simple_gcn_layer.py on 2026-05-05. It was
+# never imported anywhere; SimpleGCNLayerSparse below is the live fallback.
 
 
 class SimpleGCNLayerSparse(nn.Module):

@@ -196,7 +196,22 @@ def train_model(
             # Predict next embedding
             pred_emb = model.forward_temporal(emb_seq)
 
-            # Embedding prediction loss (primary)
+            # Embedding prediction loss (primary).
+            #
+            # NOTE on target_emb.detach():
+            # The target embedding is detached so the GCN encoder is NOT
+            # updated by the embedding-MSE term. The encoder is trained
+            # only by (a) the link-reconstruction loss and (b) the
+            # smoothness penalty. The GRU temporal head is the only
+            # component updated by l_emb.
+            #
+            # Rationale: with joint backprop the encoder can collapse to a
+            # near-constant representation, which trivially minimizes the
+            # year-to-year prediction MSE but produces uninformative
+            # embeddings. Detaching keeps the encoder grounded in the link-
+            # reconstruction objective and forces the GRU to do the actual
+            # temporal forecasting work. See Methods § "Two-stage learning
+            # signal" for the formal argument.
             l_emb = F.mse_loss(pred_emb, target_emb.detach())
 
             # Link reconstruction loss (regularizer)

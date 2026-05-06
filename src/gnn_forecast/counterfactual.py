@@ -1,5 +1,33 @@
 """Counterfactual edge simulation module.
 
+CAUSAL INTERPRETATION — read before quoting any numbers.
+The "interventions" implemented here are MODEL-BASED counterfactuals:
+they ask "what would the trained encoder produce if the focal year's
+graph had edge X added or removed?" This is not a do-calculus causal
+effect on the real international system. Three things break a causal
+interpretation:
+  1. The encoder is trained on observed correlational data; learned
+     message-passing weights reflect joint distributions, not structural
+     mechanisms.
+  2. SUTVA is violated by construction — every node's predicted
+     embedding depends on every other node's edges, so removing one tie
+     changes ALL nodes' outputs.
+  3. The "next-year" prediction is conditional on the trained model's
+     dynamics, which are themselves estimated from correlational data.
+
+What these counterfactuals DO support:
+  - Sensitivity rankings: which edges, if changed in the model, produce
+    the largest predicted shifts in focal-state embeddedness?
+  - Comparative leverage: which layers and partners matter most under
+    the model's learned dynamics?
+  - Scenario projection: assuming historical patterns persist, what
+    does removing tie X imply for the embedding space?
+
+These are useful but should be reported as model-implied sensitivities,
+not as causal effects. The simulation study (simulation.run_recovery_
+study) validates that the procedure recovers PLANTED effects in
+synthetic data, which is the strongest claim available.
+
 After training, simulate edge additions and edge knockouts in selected layers
 to estimate how adding or removing specific ties changes the future embeddedness
 or isolation of focal states (USA and China).

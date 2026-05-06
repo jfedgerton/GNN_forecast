@@ -4,6 +4,11 @@ Implements:
 1. Static GNN (no temporal component) — encodes one year, predicts next directly
 2. Pure autoregressive on degree features (no GNN, just GRU on raw features)
 3. Mean baseline (predict the mean embedding across training years)
+4. Bilinear latent space model (AME-lite) — z_i, z_j latent positions per
+   layer with logit p_ij = z_i' z_j; the IR analogue of Hoff's AME with
+   no additive sender/receiver random effects. Trained per-year and
+   stitched into a sequence so the full pipeline can compare it head-to-
+   head with the GNN.
 
 Each baseline returns the same output structure as the main model for fair comparison.
 """
@@ -289,6 +294,120 @@ def mean_baseline(
     )
 
 
+# ---------------------------------------------------------------
+# Baseline 4: Bilinear latent space model (AME-lite)
+# ---------------------------------------------------------------
+class BilinearLatentSpace(nn.Module):
+    """Per-layer latent positions; logit p_ij = z_i' z_j.
+
+    This is the GNN-free analogue of the dyadic latent space model
+    (Hoff & Ward / Hoff's AME without additive sender/receiver effects).
+    Each node has a learned latent position per layer; aggregated across
+    layers via mean. Trained by binary cross-entropy on observed edges
+    plus negative samples.
+
+    Intentionally simple — the point is a fair latent-space baseline that
+    PA reviewers will recognize, not a re-implementation of full AME.
+    """
+
+    def __init__(self, num_nodes: int, num_layers: int, emb_dim: int):
+        super().__init__()
+        # One latent matrix per layer
+        self.layer_z = nn.ParameterDict({
+            f"layer_{i}": nn.Parameter(torch.randn(num_nodes, emb_dim) * 0.1)
+            for i in range(num_layers)
+        })
+        self.num_layers = num_layers
+        self.emb_dim = emb_dim
+
+    def aggregated(self) -> torch.Tensor:
+        """Mean across layers — the embedding fed into downstream metrics."""
+        zs = [self.layer_z[f"layer_{i}"] for i in range(self.num_layers)]
+        return torch.stack(zs, dim=0).mean(dim=0)
+
+    def edge_logits(self, layer_idx: int, src: torch.LongTensor, tgt: torch.LongTensor) -> torch.Tensor:
+        z = self.layer_z[f"layer_{layer_idx}"]
+        return (z[src] * z[tgt]).sum(dim=1)
+
+
+def train_bilinear_latent_space(
+    dataset: MultiplexTemporalDataset,
+    emb_dim: int = 32,
+    num_epochs: int = 200,
+    lr: float = 1e-2,
+    n_neg_samples: int = 1000,
+    seed: int = 123,
+    device: Optional[torch.device] = None,
+) -> BaselineResult:
+    """Train a per-year bilinear latent space model and stitch into a sequence.
+
+    For each year, fit fresh latent positions to that year's edges. Embeddings
+    for downstream comparison are the mean across layers.
+
+    Sequential per-year fitting is intentionally simple — each year is its
+    own latent-space recovery problem. This matches how AME is typically run
+    on cross-sectional IR data.
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    num_layers = len(dataset.layer_names)
+    embeddings: Dict[int, torch.Tensor] = {}
+    loss_history: List[float] = []
+
+    print(f"Training Bilinear Latent Space baseline ({len(dataset.years)} years × {num_epochs} epochs)...")
+
+    for y_idx, year in enumerate(dataset.years):
+        snap = dataset.snapshots[year]
+        model = BilinearLatentSpace(snap.num_nodes, num_layers, emb_dim).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+        for epoch in range(num_epochs):
+            model.train()
+            total_loss = 0.0
+            for l_idx, ln in enumerate(dataset.layer_names):
+                if not snap.layer_mask.get(ln, False):
+                    continue
+                ei = snap.edge_indices[ln].to(device)
+                if ei.numel() == 0:
+                    continue
+                # Positive edges
+                src_pos, tgt_pos = ei[0], ei[1]
+                logits_pos = model.edge_logits(l_idx, src_pos, tgt_pos)
+                # Negative samples (random pairs)
+                src_neg = torch.randint(0, snap.num_nodes, (n_neg_samples,), device=device)
+                tgt_neg = torch.randint(0, snap.num_nodes, (n_neg_samples,), device=device)
+                logits_neg = model.edge_logits(l_idx, src_neg, tgt_neg)
+                # BCE
+                labels = torch.cat([
+                    torch.ones_like(logits_pos), torch.zeros_like(logits_neg),
+                ])
+                logits = torch.cat([logits_pos, logits_neg])
+                loss = F.binary_cross_entropy_with_logits(logits, labels)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+
+            if epoch == num_epochs - 1:
+                loss_history.append(total_loss)
+
+        with torch.no_grad():
+            embeddings[year] = model.aggregated().cpu()
+
+        if (y_idx + 1) % max(1, len(dataset.years) // 5) == 0:
+            print(f"  Year {year}: final BCE={loss_history[-1]:.4f}")
+
+    return BaselineResult(
+        model_name="bilinear_latent_space",
+        loss_history=loss_history,
+        yearly_embeddings=embeddings,
+    )
+
+
 def compare_baselines(
     dataset: MultiplexTemporalDataset,
     full_model_result: TrainingResult,
@@ -297,6 +416,7 @@ def compare_baselines(
     num_epochs: int = 100,
     device: Optional[torch.device] = None,
     save_dir: Optional[str] = None,
+    include_bilinear: bool = True,
 ) -> pd.DataFrame:
     """Run all baselines and compare with the full model.
 
@@ -320,6 +440,13 @@ def compare_baselines(
     # Mean baseline
     mean_result = mean_baseline(dataset, dataset.years[-1])
     baselines["mean_baseline"] = mean_result
+
+    # Bilinear latent space (AME-lite) — most relevant baseline for PA reviewers
+    if include_bilinear:
+        bls_result = train_bilinear_latent_space(
+            dataset, emb_dim=out_dim, num_epochs=200, device=device,
+        )
+        baselines["bilinear_latent_space"] = bls_result
 
     # Compare final losses
     rows = []

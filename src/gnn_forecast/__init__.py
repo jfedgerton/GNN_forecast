@@ -15,14 +15,31 @@ from .counterfactual import (
     results_to_dataframe,
     compute_embeddedness_metrics,
 )
-from .validation import walk_forward_backtest, multi_seed_evaluation
+from .validation import (
+    walk_forward_backtest,
+    multi_seed_evaluation,
+    multi_horizon_backtest,
+    HORIZONS,
+)
 from .visualization import generate_all_tables, embeddedness_time_series
-from .baselines import compare_baselines
+from .baselines import compare_baselines, train_bilinear_latent_space
 from .isolation_analysis import (
     run_isolation_analysis,
     dual_focal_simulation,
     multi_edge_simulation,
     greedy_combo_search,
+)
+from .uncertainty import (
+    train_ensemble,
+    embeddedness_with_cis,
+    bootstrap_counterfactual_cis,
+    mc_dropout_predictions,
+    EnsembleResult,
+)
+from .simulation import (
+    generate_synthetic_multiplex,
+    run_recovery_study,
+    SyntheticMultiplex,
 )
 
 __all__ = [
@@ -42,11 +59,22 @@ __all__ = [
     "compute_embeddedness_metrics",
     "walk_forward_backtest",
     "multi_seed_evaluation",
+    "multi_horizon_backtest",
+    "HORIZONS",
     "generate_all_tables",
     "embeddedness_time_series",
     "compare_baselines",
+    "train_bilinear_latent_space",
     "run_isolation_analysis",
     "dual_focal_simulation",
     "multi_edge_simulation",
     "greedy_combo_search",
+    "train_ensemble",
+    "embeddedness_with_cis",
+    "bootstrap_counterfactual_cis",
+    "mc_dropout_predictions",
+    "EnsembleResult",
+    "generate_synthetic_multiplex",
+    "run_recovery_study",
+    "SyntheticMultiplex",
 ]

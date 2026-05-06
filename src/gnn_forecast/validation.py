@@ -3,6 +3,11 @@
 Implements temporal cross-validation: train on [start, split_year], test on
 (split_year, end]. Reports embedding prediction MSE, link prediction AUC,
 and counterfactual stability across folds.
+
+The horizon-by-horizon evaluator (`multi_horizon_backtest`) reports
+performance separately at the 5-, 10-, 15-, and 20-year forecast horizons,
+which replaces the original 25-year point-prediction framing per Political
+Analysis revision recommendations.
 """
 from __future__ import annotations
 
@@ -301,6 +306,150 @@ def walk_forward_backtest(
         print(f"\nSaved backtest summary to {save_path / 'backtest_summary.csv'}")
 
     return BacktestResult(folds=folds, summary=summary)
+
+
+# ---------------------------------------------------------------
+# Multi-horizon backtest: evaluate at 5, 10, 15, 20 year horizons
+# ---------------------------------------------------------------
+HORIZONS = (5, 10, 15, 20)
+
+
+def multi_horizon_backtest(
+    dataset: MultiplexTemporalDataset,
+    split_years: List[int],
+    horizons: Tuple[int, ...] = HORIZONS,
+    model_config: Optional[MultiplexGNNConfig] = None,
+    train_config: Optional[TrainingConfig] = None,
+    seq_len: int = 5,
+    device: Optional[torch.device] = None,
+    save_dir: Optional[str] = None,
+) -> pd.DataFrame:
+    """Walk-forward backtest with explicit horizon decomposition.
+
+    For each split_year, trains on [start, split_year] and rolls the
+    autoregressive predictor forward h years for each h in horizons.
+    Reports MSE and link AUC at each (split_year, horizon) cell.
+
+    This replaces the older single-horizon design. The 5/10/15/20 grid
+    is what PA expects from a forecasting paper claiming long-horizon
+    relevance.
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    all_years = dataset.years
+    max_horizon = max(horizons)
+
+    if model_config is None:
+        model_config = MultiplexGNNConfig(
+            num_layers=len(dataset.layer_names),
+            in_dim=len(dataset.layer_names),
+            hidden_dim=64,
+            emb_dim=32,
+            seq_len=seq_len,
+        )
+    if train_config is None:
+        train_config = TrainingConfig(
+            num_epochs=100, seq_len=seq_len, patience=20, print_every=25,
+        )
+
+    rows = []
+
+    for fold_id, split_year in enumerate(split_years):
+        train_years = [y for y in all_years if y <= split_year]
+        if len(train_years) < seq_len + 1:
+            print(f"Skipping split {split_year}: too few train years")
+            continue
+
+        print(f"\n--- Fold {fold_id+1}: train ≤ {split_year}, horizons {horizons} ---")
+
+        train_dataset = _subset_dataset(dataset, train_years)
+        result = train_model(train_dataset, model_config, train_config, device=device)
+        model = result.model
+        model.eval()
+
+        # Encode the trailing window from train years
+        history: List[torch.Tensor] = []
+        with torch.no_grad():
+            for y in train_years[-seq_len:]:
+                snap = dataset.snapshots[y]
+                nf = snap.node_features.to(device)
+                ei = {k: v.to(device) for k, v in snap.edge_indices.items()}
+                ew = {k: v.to(device) for k, v in snap.edge_weights.items()}
+                history.append(model.encode_snapshot(nf, ei, ew, snap.layer_mask))
+
+        # Roll forward year by year and record metrics at horizon checkpoints
+        horizon_set = set(horizons)
+        usa_idx = dataset.ccode_to_idx.get(USA_CCODE)
+        chn_idx = dataset.ccode_to_idx.get(CHN_CCODE)
+
+        with torch.no_grad():
+            for h in range(1, max_horizon + 1):
+                pred_emb = model.forward_temporal(history[-seq_len:])
+                target_year = split_year + h
+
+                # Need the actual snapshot to score against
+                if target_year not in dataset.snapshots:
+                    history.append(pred_emb)
+                    continue
+
+                test_snap = dataset.snapshots[target_year]
+                nf = test_snap.node_features.to(device)
+                ei = {k: v.to(device) for k, v in test_snap.edge_indices.items()}
+                ew = {k: v.to(device) for k, v in test_snap.edge_weights.items()}
+                actual_emb = model.encode_snapshot(nf, ei, ew, test_snap.layer_mask)
+
+                if h in horizon_set:
+                    mse = F.mse_loss(pred_emb, actual_emb).item()
+                    merged_ei = _merge_all_edges(test_snap, device)
+                    auc = _approximate_link_auc(pred_emb, merged_ei, dataset.num_nodes)
+
+                    row = {
+                        "fold_id": fold_id,
+                        "split_year": split_year,
+                        "horizon": h,
+                        "target_year": target_year,
+                        "test_emb_mse": mse,
+                        "test_link_auc": auc,
+                    }
+                    if usa_idx is not None:
+                        usa_m = compute_embeddedness_metrics(
+                            pred_emb, usa_idx, dataset.ccode_to_idx,
+                        )
+                        row["usa_mean_cosine_pred"] = usa_m.mean_cosine_similarity
+                        row["usa_centroid_dist_pred"] = usa_m.centroid_distance
+                    if chn_idx is not None:
+                        chn_m = compute_embeddedness_metrics(
+                            pred_emb, chn_idx, dataset.ccode_to_idx,
+                        )
+                        row["chn_mean_cosine_pred"] = chn_m.mean_cosine_similarity
+                        row["chn_centroid_dist_pred"] = chn_m.centroid_distance
+                    rows.append(row)
+                    print(f"  h={h:>2} (yr {target_year}): MSE={mse:.6f}, AUC={auc:.4f}")
+
+                # Slide the window using the prediction (autoregressive rollout)
+                history.append(pred_emb)
+
+    df = pd.DataFrame(rows)
+
+    if save_dir is not None:
+        save_path = Path(save_dir)
+        save_path.mkdir(parents=True, exist_ok=True)
+        df.to_csv(save_path / "multi_horizon_backtest.csv", index=False)
+
+        # Per-horizon summary
+        summary = df.groupby("horizon").agg(
+            mean_mse=("test_emb_mse", "mean"),
+            std_mse=("test_emb_mse", "std"),
+            mean_auc=("test_link_auc", "mean"),
+            std_auc=("test_link_auc", "std"),
+            n_folds=("fold_id", "nunique"),
+        ).reset_index()
+        summary.to_csv(save_path / "multi_horizon_summary.csv", index=False)
+        print("\n--- Horizon summary ---")
+        print(summary.to_string(index=False))
+
+    return df
 
 
 def _subset_dataset(

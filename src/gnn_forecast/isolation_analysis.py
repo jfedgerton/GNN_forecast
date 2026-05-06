@@ -168,23 +168,24 @@ def dual_focal_simulation(
     operations: Optional[List[str]] = None,
     seq_len: int = 5,
     focal_year: Optional[int] = None,
+    symmetric_n_edges: Optional[int] = None,
     device: Optional[torch.device] = None,
 ) -> List[DualFocalResult]:
     """Run counterfactual analysis measuring effects on both USA and China.
 
-    For each (partner, layer, operation): disconnect or fully connect the
-    partner in that layer, then measure the resulting embedding change
-    for both USA and China in the predicted next-period embedding.
+    DEFAULT (symmetric_n_edges=None): legacy "remove ALL / add up to 50"
+    behavior. Effects of add and remove are not directly comparable in
+    magnitude — interpret them as separate operations.
 
-    The perturbation is: remove (or add) ALL of the partner state's edges
-    in the given layer. This captures the full system-wide effect of that
-    state's participation in the layer — not just a single bilateral tie —
-    which propagates through the GNN's message passing to affect every
-    other state's embedding, including USA and China.
+    SYMMETRIC MODE (symmetric_n_edges=k, e.g. 5): both add and remove
+    operate on exactly k of the partner's edges. 'remove' drops the first
+    k existing ties (deterministic ordering); 'add' adds k new ties to
+    currently-unconnected nodes (also deterministic). Use this mode when
+    you want delta magnitudes to be directly comparable across operations
+    — recommended for the headline PA-paper figure.
 
-    This is more efficient than running batch_counterfactual_analysis twice
-    because each perturbation only requires one forward pass to get both
-    USA and China effects.
+    Each perturbation is one forward pass per focal pair (USA + China),
+    half the cost of running the bilateral counterfactual twice.
     """
     if device is None:
         device = next(model.parameters()).device
@@ -260,10 +261,20 @@ def dual_focal_simulation(
                     ew_l = mod_ew[layer_name]
 
                     if op == "remove" and ei_l.numel() > 0:
-                        # Remove ALL edges involving this partner in this layer
-                        keep = ~((ei_l[0] == partner_idx) | (ei_l[1] == partner_idx))
-                        mod_ei[layer_name] = ei_l[:, keep]
-                        mod_ew[layer_name] = ew_l[keep]
+                        if symmetric_n_edges is None:
+                            # Legacy: remove ALL edges involving this partner
+                            keep = ~((ei_l[0] == partner_idx) | (ei_l[1] == partner_idx))
+                            mod_ei[layer_name] = ei_l[:, keep]
+                            mod_ew[layer_name] = ew_l[keep]
+                        else:
+                            # Symmetric: remove first k edges of the partner
+                            partner_mask = (ei_l[0] == partner_idx) | (ei_l[1] == partner_idx)
+                            partner_edge_idx = partner_mask.nonzero(as_tuple=False).flatten()
+                            to_remove = partner_edge_idx[:symmetric_n_edges]
+                            keep_mask = torch.ones(ei_l.size(1), dtype=torch.bool, device=device)
+                            keep_mask[to_remove] = False
+                            mod_ei[layer_name] = ei_l[:, keep_mask]
+                            mod_ew[layer_name] = ew_l[keep_mask]
 
                     elif op == "add":
                         # Find which nodes the partner is NOT connected to,
@@ -279,8 +290,8 @@ def dual_focal_simulation(
                             n for n in range(dataset.num_nodes)
                             if n != partner_idx and n not in existing
                         ]
-                        # Sample up to 50 new connections
-                        new_targets = unconnected[:50]
+                        n_to_add = symmetric_n_edges if symmetric_n_edges is not None else 50
+                        new_targets = unconnected[:n_to_add]
                         if new_targets:
                             src = [partner_idx] * len(new_targets) + new_targets
                             tgt = new_targets + [partner_idx] * len(new_targets)
@@ -1190,6 +1201,7 @@ def run_isolation_analysis(
     combo_top_k: int = 10,
     combo_max_size: int = 3,
     skip_combos: bool = False,
+    symmetric_n_edges: Optional[int] = 5,
     device: Optional[torch.device] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Run the full isolation analysis pipeline and save all outputs.
@@ -1223,10 +1235,12 @@ def run_isolation_analysis(
     print("=" * 60)
 
     # 1. Dual-focal simulation (single-edge sweep)
-    print("\n1. Running dual-focal edge simulations...")
+    print(f"\n1. Running dual-focal edge simulations "
+          f"(symmetric_n_edges={symmetric_n_edges})...")
     dual_results = dual_focal_simulation(
         model, dataset, partner_ccodes=partner_ccodes,
-        seq_len=seq_len, focal_year=focal_year, device=device,
+        seq_len=seq_len, focal_year=focal_year,
+        symmetric_n_edges=symmetric_n_edges, device=device,
     )
     df = dual_results_to_dataframe(dual_results)
     df = classify_quadrants(df)

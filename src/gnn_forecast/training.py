@@ -43,9 +43,10 @@ class TrainingConfig:
     weight_decay: float = 1e-5
     num_epochs: int = 100
     seq_len: int = 5              # window of years for temporal model
-    lambda_link: float = 1.0      # weight for link reconstruction loss (was 0.1; raised 2026-05-06)
+    lambda_link: float = 5.0      # weight for link reconstruction loss (raised 0.1->1.0->5.0; 2026-05-06)
     lambda_smooth: float = 0.01   # weight for temporal smoothness penalty
-    lambda_anti_collapse: float = 0.05  # penalty for mean embedding norm below 1.0
+    lambda_anti_collapse: float = 0.2  # penalty for mean embedding norm below target_norm
+    anti_collapse_target_norm: float = 2.0  # push mean ||z|| toward at least this value
     link_sample_size: int = 500   # number of node pairs to sample for link loss
     patience: int = 20            # early stopping patience
     min_delta: float = 1e-4       # minimum improvement for early stopping
@@ -239,11 +240,13 @@ def train_model(
             l_smooth = F.mse_loss(pred_emb, emb_seq[-1].detach())
 
             # Anti-collapse penalty: penalize when mean embedding norm
-            # falls below 1.0. Uses the predicted embedding (which is the
-            # GRU output) so that gradient flows through both the GRU
-            # head and the encoder via the input history.
+            # falls below `anti_collapse_target_norm`. Uses the predicted
+            # embedding (the GRU output) so that gradient flows through
+            # both the GRU head and the encoder via the input history.
             mean_norm = pred_emb.norm(dim=1).mean()
-            l_anti_collapse = F.relu(1.0 - mean_norm)
+            l_anti_collapse = F.relu(
+                train_config.anti_collapse_target_norm - mean_norm
+            )
 
             # Total loss
             loss = (

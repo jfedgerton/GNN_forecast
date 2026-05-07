@@ -43,10 +43,15 @@ class TrainingConfig:
     weight_decay: float = 1e-5
     num_epochs: int = 100
     seq_len: int = 5              # window of years for temporal model
-    lambda_link: float = 5.0      # weight for link reconstruction loss (raised 0.1->1.0->5.0; 2026-05-06)
-    lambda_smooth: float = 0.01   # weight for temporal smoothness penalty
-    lambda_anti_collapse: float = 0.2  # penalty for mean embedding norm below target_norm
-    anti_collapse_target_norm: float = 2.0  # push mean ||z|| toward at least this value
+    # Link-reconstruction loss is now applied to BOTH the GRU output (pred_emb)
+    # AND the encoder's direct output for the target year (target_emb, NOT
+    # detached). This gives the encoder direct gradient pressure to produce
+    # link-predictive embeddings independent of the GRU pathway. Reverted
+    # lambda_link back to 1.0 since the dual supervision should be enough.
+    lambda_link: float = 1.0
+    lambda_smooth: float = 0.01
+    lambda_anti_collapse: float = 0.05
+    anti_collapse_target_norm: float = 1.0
     link_sample_size: int = 500   # number of node pairs to sample for link loss
     patience: int = 20            # early stopping patience
     min_delta: float = 1e-4       # minimum improvement for early stopping
@@ -227,14 +232,25 @@ def train_model(
             # signal" for the formal argument.
             l_emb = F.mse_loss(pred_emb, target_emb.detach())
 
-            # Link reconstruction loss (regularizer)
+            # Link reconstruction loss — applied to BOTH the GRU prediction
+            # AND the encoder's direct output for the target year. The
+            # second path (target_emb, NOT detached) gives the encoder
+            # direct gradient pressure to produce link-predictive
+            # embeddings, which is essential because pred_emb's gradient
+            # to the encoder is mediated through the GRU and saturates
+            # near the trivial all-zero solution. Without this, the
+            # encoder cannot escape chance-level link reconstruction.
             merged_ei = _merge_edge_indices(
                 {k: v.to(device) for k, v in target_snap.edge_indices.items()},
                 target_snap.layer_mask,
             )
-            l_link = _compute_link_loss(
+            l_link_pred = _compute_link_loss(
                 pred_emb, merged_ei, dataset.num_nodes, train_config.link_sample_size,
             )
+            l_link_encoder = _compute_link_loss(
+                target_emb, merged_ei, dataset.num_nodes, train_config.link_sample_size,
+            )
+            l_link = l_link_pred + l_link_encoder
 
             # Temporal smoothness penalty
             l_smooth = F.mse_loss(pred_emb, emb_seq[-1].detach())
@@ -360,6 +376,31 @@ def forecast_embeddings(
     years = dataset.years
     if len(years) < seq_len:
         raise ValueError(f"Need at least {seq_len} years, got {len(years)}")
+
+    # Encode last seq_len years
+    history: List[torch.Tensor] = []
+    with torch.no_grad():
+        for year in years[-seq_len:]:
+            snap = dataset.snapshots[year]
+            nf = snap.node_features.to(device)
+            ei = {k: v.to(device) for k, v in snap.edge_indices.items()}
+            ew = {k: v.to(device) for k, v in snap.edge_weights.items()}
+            emb = model.encode_snapshot(nf, ei, ew, snap.layer_mask)
+            history.append(emb)
+
+    # Autoregressive rollout
+    last_year = years[-1]
+    forecasts: Dict[int, torch.Tensor] = {}
+
+    with torch.no_grad():
+        for step in range(n_steps):
+            pred = model.forward_temporal(history[-seq_len:])
+            future_year = last_year + step + 1
+            forecasts[future_year] = pred.cpu()
+            history.append(pred)
+
+    return forecasts
+} years, got {len(years)}")
 
     # Encode last seq_len years
     history: List[torch.Tensor] = []

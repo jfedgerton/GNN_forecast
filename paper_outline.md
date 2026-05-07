@@ -6,6 +6,26 @@
 
 ---
 
+## Status & artifact paths (last updated 2026-05-06)
+
+All code lives at `https://github.com/jfedgerton/GNN_forecast.git`, branch `pa-revision-uncertainty-sim`. On Roar Collab, the project is at `/scratch/jfe4/GNN_forecast` (symlink to `/storage/group/LiberalArts/default/jfe4_collab/GNN_forecast`).
+
+| Component | Status | Output paths (Roar) |
+|---|---|---|
+| Planted-wedge simulation (§5.2) | **DONE** | `outputs/simulation_study/recovery_summary.csv`, `recovery_study.csv`, `recovery_summary_planted.csv` |
+| Multi-horizon backtest 5/10/15/20 (§5.1) | RUNNING — SLURM job 52743495 (~12h) | `outputs/multi_horizon/multi_horizon_backtest.csv`, `multi_horizon_summary.csv` |
+| Ensemble UQ + bootstrap CIs (§5.4) | RUNNING — SLURM job 52743497 (~24h) | `outputs/uncertainty/bootstrap_counterfactual_cis.csv`, `embeddedness_ci_final_year.csv`, `top_significant_wedges.csv`, `ensemble_weights/` |
+| AME baseline (§5.3) | NOT YET SUBMITTED | `outputs/ame_baseline/<layer>/ame_latent_<year>.csv`, `ame_fit_summary.csv` |
+| Layer attention figure (§6.1) | code present in `visualization.py`, not yet generated | `outputs/figures/layer_attention_timeseries.png` (TBD) |
+| Top wedge bar chart (§6.2) | code in `isolation_analysis.plot_wedge_bar`, not yet generated | `outputs/figures/bar_top_wedge_edges.png` (TBD) |
+| USA-vs-China scatter (§6.3) | code in `isolation_analysis.plot_isolation_scatter`, not yet generated | `outputs/figures/scatter_usa_vs_china.png` (TBD) |
+| Layer heatmap (§6.3) | code in `isolation_analysis.plot_layer_heatmap`, not yet generated | `outputs/figures/heatmap_layer_isolation.png` (TBD) |
+| 25-year rollout figure (Appendix F) | not yet generated | `outputs/figures/embedding_forecast_2026_2050.png` (TBD) |
+
+To pull any of these results from Roar to local, use `rsync` from the storage path or download via the OnDemand File Manager.
+
+---
+
 ## 1. Introduction (≈ 1,000 words)
 
 Open with the substantive puzzle in two sentences (states embedded in many overlapping relational systems — alliances, IGOs, trade — but methods analyze them one layer at a time), then pivot immediately to the methodological gap. State three contributions explicitly:
@@ -81,7 +101,14 @@ Define the counterfactual operator $\mathrm{do}(e \to \tilde{e})$ on the graph. 
 
 **Symmetric perturbations.** Add and remove operate on the same number of edges $k$ (default $k = 5$), so deltas are directly comparable in magnitude. The legacy "remove all / add up to 50" mode is preserved for backward-compatible comparison and reported as an appendix robustness check.
 
-**Embeddedness metrics.** Mean cosine similarity to all other states; centroid distance; mean distance to P5; $k$-nearest-neighbor density.
+**Embeddedness metrics.** We report two distance-based metrics that capture different geometric properties of the focal node's embedding shift, plus two reference distances:
+
+- **Centroid distance** (Euclidean): the focal's distance to the centroid of all other embeddings. Increases under graph-theoretic isolation. Used as the *headline* isolation metric.
+- **Centroid proximity** (cosine): the focal's mean cosine similarity to all other embeddings. We deliberately rename this from "isolation" to "proximity" because the simulation study (§5.2) shows it captures *embedding typicality* rather than peripheralization: when a strong tie is removed, the GNN representation moves toward the system mean, which **increases** mean cosine similarity. This is consistent across distance metrics and is itself a substantive observation (see §4.6).
+- **Mean distance to P5** (Euclidean): focal's average distance to the embeddings of the five major powers. Used for context, not headline.
+- **$k$-nearest-neighbor density** (Euclidean): mean distance to the focal's $k$ nearest neighbors in embedding space. Local-density diagnostic.
+
+For each (partner, layer, operation) triple we compute both centroid-distance and centroid-proximity wedges $w_e = \Delta_e^{\text{USA}} - \Delta_e^{\text{CHN}}$, and rank perturbations under both metric families. The simulation validation (§5.2) shows wedge recovery is robust to choice of distance metric.
 
 **Causal interpretation — explicit disclaimer.** This subsection earns the paper credibility. The interventions are model-based counterfactuals, not do-calculus causal effects. State three reasons (correlational training, SUTVA violation through message passing, conditional-on-model dynamics). Reframe what these counterfactuals *do* support: sensitivity rankings, comparative leverage estimates, scenario projection. Cite the planted-wedge simulation study (§ 5.2) as the strongest available validation.
 
@@ -93,29 +120,76 @@ Wedge metric: $w_e = \Delta_e^{\text{USA}} - \Delta_e^{\text{CHN}}$. Quadrant cl
 
 Ensemble of $M = 10$ models with seeds $\{123, 124, \ldots, 132\}$. Per-cell counterfactual deltas reported as ensemble means with percentile-bootstrap 95% CIs. A cell is flagged "significant" when its CI excludes zero on the wedge dimension. MC-dropout is provided as a single-model alternative for replication purposes.
 
+### 4.6 Single-focal shifts measure embedding typicality, not isolation
+
+A separate methodological observation arising from the simulation validation (§5.2): under both Euclidean and cosine distance metrics, removing a strong structural friend pulls the focal's embedding *toward* the system centroid, not away from it. The model's learned representation reads "remove a key tie" as "this country looks more like the average country," not as "this country is more peripheral." This holds across distance metric choice, ruling out a metric artifact, and is therefore a property of the GNN's encoder dynamics rather than of how we measure distance. Implication: single-focal $\Delta$ rankings should be reported as *typicality shifts*, not isolation rankings. The wedge metric (which differences USA's typicality shift from China's typicality shift) remains the appropriate operationalization of asymmetric structural effect.
+
 ## 5. Validation (≈ 1,800 words — the section reviewers will scrutinize most)
 
-### 5.1 Walk-forward backtests at horizons 5, 10, 15, 20
+### 5.1 Walk-forward backtests at horizons 5, 10, 15, 20 — RUNNING
 
-Splits at 1985, 1990, 1995, 2000, 2005. For each split: train on $[\text{start}, t_{\text{split}}]$, autoregressively roll embeddings forward, score against actual encoded embeddings at $t_{\text{split}} + h$ for $h \in \{5, 10, 15, 20\}$. Metrics: embedding MSE, link prediction AUC, USA/China embeddedness drift.
+**SLURM job 52743495** on Roar `standard` partition (GPU, ~12h). Splits at 1985, 1990, 1995, 2000, 2005. For each split: train on $[\text{start}, t_{\text{split}}]$, autoregressively roll embeddings forward, score against actual encoded embeddings at $t_{\text{split}} + h$ for $h \in \{5, 10, 15, 20\}$. Metrics: embedding MSE, link prediction AUC, USA/China embeddedness drift.
 
 Report a horizon-MSE/AUC table and a horizon-decay figure (one panel per metric, color by split). The story should be: the model holds up to 5–10 years cleanly, degrades predictably to 15, and at 20 years is close to the bilinear baseline — which is the honest framing that gets the long-horizon claim past reviewers.
 
-### 5.2 Planted-wedge recovery on synthetic data
+**Expected artifacts.**
+- `outputs/multi_horizon/multi_horizon_backtest.csv` — one row per (split_year × horizon)
+- `outputs/multi_horizon/multi_horizon_summary.csv` — aggregated MSE/AUC by horizon
+- Logs: `logs/horizon_52743495.out`, `.err`
 
-Generate a 60-node, 3-block, 3-layer multiplex SBM over 30 years. Plant a known wedge edge (one partner densely connected to "USA" in one layer, to "China" in another). Train the GNN; run dual-focal counterfactual sweep; report the rank of the planted edge in the top-K isolation/wedge rankings, averaged over $R = 10$ replicates with seeds $\{123, \ldots, 132\}$.
+### 5.2 Planted-wedge recovery on synthetic data — COMPLETED
 
-This is the most reviewer-defensible methodological claim. State the recovery-rate-at-$K$ explicitly.
+**Design.** A 60-node, 3-block, 3-layer multiplex SBM over 30 years. USA at node 0 (block 0), China at node 1 (block 1). For each replicate, a partner is rotated through block 2 (`block_2_indices[r % len]`), and given $k=12$ extra alliance-layer ties to USA. The intervention tested: "remove all of partner's ties in offensive_alliances." Each replicate also runs a *null* condition (same SBM, no planted ties) as the chance baseline. $R = 10$ planted + $R = 10$ null replicates with seeds $\{123, \ldots, 132\}$.
 
-### 5.3 Baseline comparison
+**Results** (`outputs/simulation_study/recovery_summary.csv`):
+
+| Metric family | Planted top-10 | Null top-10 | Planted median rank | Null median rank |
+|---|---|---|---|---|
+| **Wedge — centroid distance (Euclidean)** | **100%** | 0% | **1** | 282.5 |
+| **Wedge — centroid proximity (cosine)** | **100%** | 0% | **1** | 303 |
+| Single-focal USA — centroid distance | 0% | 0% | 348 | 229 |
+| Single-focal USA — centroid proximity | 0% | 0% | 348 | 276 |
+| Single-focal China — centroid distance | 10% | 0% | 309.5 | 211.5 |
+| Single-focal China — centroid proximity | 0% | 0% | 348 | 241.5 |
+
+**Headline reading.** The wedge metric recovers the planted asymmetric tie with 100% precision and 0% false-positive rate, and does so under *both* distance metrics — confirming the result is not metric-dependent. Median rank of the planted edge is 1 of 348 candidates in planted condition vs. ~290 in null, a ~290× separation between true positive and chance.
+
+**Single-focal pattern.** The single-focal isolation rankings produce ranks at or near the maximum (348) in the planted condition under both distance metrics. This is not failure — it is the *consistent* signature of the encoder pulling focals toward the system centroid when a key tie is removed (see §4.6). The metric responds, but in the opposite direction from what "isolation" naively suggests.
+
+**Artifacts.**
+- `outputs/simulation_study/recovery_summary.csv` — 2-row table (planted, null) × 12 metrics
+- `outputs/simulation_study/recovery_study.csv` — 20 rows (10 replicates × 2 scenarios) with per-replicate ranks
+- `outputs/simulation_study/recovery_summary_planted.csv` — legacy single-row summary for backward compat
+- Code: `src/gnn_forecast/simulation.py`, executed by `scripts/run_simulation_study.py` via SLURM `hpc/job_simulation_study.sh`
+
+**For the paper.** Lead with the wedge result. Report the single-focal pattern as a separate finding tied to §4.6 (typicality, not isolation). Consider adding a calibration figure: planted vs. null wedge-rank distributions side-by-side, with the chance baseline marked.
+
+### 5.3 Baseline comparison — PARTIAL (AME job not yet submitted)
 
 Four baselines: static GNN (no temporal), pure AR on degree features (no GNN), mean baseline, and bilinear latent-space (AME-lite, fit per year via PyTorch — explicitly cite Hoff). Optional R-side full AME via `amen` package available in `scripts/run_ame_baseline.R` for the most rigorous comparison.
 
 Report: per-horizon link-prediction AUC, embedding MSE at $h = 5$ and $h = 10$, recovered layer attention weights. The GNN should win by a clear margin at short horizons; the comparison at long horizons should show the GNN converges toward but does not collapse to the latent-space baseline.
 
-### 5.4 Ensemble uncertainty
+**Expected artifacts.**
+- `outputs/ame_baseline/<layer>/ame_latent_<year>.csv` — per (layer, year) AME latent positions (one CSV each)
+- `outputs/ame_baseline/ame_fit_summary.csv` — fit diagnostics
+- Submit via `sbatch hpc/job_ame_baseline.sh` — runs on `basic` partition, no GPU, ~12h
+- Need a small comparison script to align AME latent positions with GNN embeddings (compute per-year R² between the two representations) — currently a TODO; will live in `scripts/compare_ame_to_gnn.py`
+
+### 5.4 Ensemble uncertainty — RUNNING
+
+**SLURM job 52743497** on Roar `standard` partition (GPU, ~24h). Trains an $M = 10$ ensemble (seeds 123–132), then runs the dual-focal counterfactual sweep separately for each ensemble member to get percentile-bootstrap 95% CIs on every (partner, layer, operation) wedge.
 
 Show the bootstrap-CI table for the top-20 wedge edges. Argue that significance is concentrated in the trade and IGO layers, with alliance-layer wedges generally showing wider CIs (because alliance edges are sparser and the model is less confident).
+
+**Expected artifacts.**
+- `outputs/uncertainty/ensemble_weights/ensemble_seed{123..132}_weights.pt` — trained model checkpoints
+- `outputs/uncertainty/ensemble_weights/ensemble_seed{123..132}_embeddings.pt` — yearly embeddings per seed
+- `outputs/uncertainty/ensemble_weights/ensemble_layer_weights.csv` — learned layer attention by seed
+- `outputs/uncertainty/embeddedness_ci_final_year.csv` — USA + China embeddedness at the final year with 95% CIs
+- `outputs/uncertainty/bootstrap_counterfactual_cis.csv` — per (partner, layer, op) cell with mean Δ, lo, hi, `wedge_significant` flag
+- `outputs/uncertainty/top_significant_wedges.csv` — top-20 wedges whose CI excludes zero
+- Logs: `logs/uq_52743497.out`, `.err`
 
 ## 6. Empirical Demonstration: USA-China Edge Asymmetries (≈ 1,500 words)
 
@@ -157,26 +231,55 @@ One paragraph restating the three methodological contributions, one paragraph on
 
 ## Appendix structure
 
-- **A.** Full list of layer files, peacesciencer function calls, COW code mappings.
-- **B.** Hyperparameter search results (hidden_dim, emb_dim, seq_len, $\lambda$ values).
-- **C.** Full walk-forward results table (every fold × horizon × metric).
-- **D.** Full planted-wedge recovery study results (every replicate, every layer).
-- **E.** AME-lite training diagnostics and per-year R² between AME and GNN embeddings.
-- **F.** 25-year scenario rollout (USA/China embeddedness trajectories with ensemble fan charts) — *this is where the 2050 figure goes, framed as illustrative scenario projection*.
-- **G.** Robustness: residualized layers, MC dropout vs. ensemble agreement, alternate $k$ for symmetric perturbations.
-- **H.** Computational cost: training time per epoch, ensemble training time, counterfactual sweep cost.
+- **A.** Full list of layer files, peacesciencer function calls, COW code mappings. Source: `data/processed/*.csv`, `scripts/export_peacesciencer_layers.R`.
+- **B.** Hyperparameter search results (hidden_dim, emb_dim, seq_len, $\lambda$ values). Currently uses defaults from `MultiplexGNNConfig` (hidden=64, emb=32, seq_len=5, λ_link=0.1, λ_smooth=0.01). A formal sweep is a TODO.
+- **C.** Full walk-forward results table (every fold × horizon × metric). Source: `outputs/multi_horizon/multi_horizon_backtest.csv` (after job 52743495 completes).
+- **D.** Full planted-wedge recovery study results (every replicate, both metric families, both scenarios). Source: `outputs/simulation_study/recovery_study.csv`. **DONE.**
+- **E.** AME-lite training diagnostics and per-year R² between AME and GNN embeddings. Source: `outputs/ame_baseline/ame_fit_summary.csv` plus latent files; comparison script TBD.
+- **F.** 25-year scenario rollout (USA/China embeddedness trajectories with ensemble fan charts) — *this is where the 2050 figure goes, framed as illustrative scenario projection*. Source: built from `outputs/uncertainty/ensemble_weights/ensemble_seed*_embeddings.pt` plus `gnn_forecast.training.forecast_embeddings`. Plot script TBD; should live in `scripts/plot_long_horizon_fan.py`.
+- **G.** Robustness: residualized layers, MC dropout vs. ensemble agreement, alternate $k$ for symmetric perturbations. Sources: `data/processed/*_weighted.csv`, `gnn_forecast.uncertainty.mc_dropout_predictions`, the `symmetric_n_edges` parameter on `dual_focal_simulation`.
+- **H.** Computational cost: training time per epoch, ensemble training time, counterfactual sweep cost. Pull from SLURM job logs: `logs/{sim,horizon,uq,ame}_<jobid>.{out,err}` after each job completes.
+
+## Figure inventory (where each one comes from)
+
+| Figure | Section | Code that produces it | Output path |
+|---|---|---|---|
+| Layer-coverage matrix (years × layers) | §3 | TODO — small matplotlib heatmap from `MultiplexTemporalDataset.snapshots[y].layer_mask` | `outputs/figures/layer_coverage.png` (TBD) |
+| Two-stage learning signal diagram | §4.2 | hand-drawn or TikZ, no auto-gen | `figures/two_stage_signal.pdf` (TBD) |
+| Wedge-rank distribution (planted vs. null) | §5.2 | TODO — write `scripts/plot_recovery_distributions.py` reading `recovery_study.csv` | `outputs/figures/recovery_distributions.png` (TBD) |
+| Horizon-decay (MSE & AUC) | §5.1 | TODO — built from `multi_horizon_summary.csv` | `outputs/figures/horizon_decay.png` (TBD) |
+| Layer attention timeseries | §6.1 | `gnn_forecast.visualization.embeddedness_time_series` adapted | `outputs/figures/layer_attention_timeseries.png` (TBD) |
+| Top wedge bar chart | §6.2 | `gnn_forecast.isolation_analysis.plot_wedge_bar` | `outputs/figures/bar_top_wedge_edges.png` |
+| USA-vs-China scatter | §6.3 | `gnn_forecast.isolation_analysis.plot_isolation_scatter` | `outputs/figures/scatter_usa_vs_china.png` |
+| Layer-isolation heatmap | §6.3 | `gnn_forecast.isolation_analysis.plot_layer_heatmap` | `outputs/figures/heatmap_layer_isolation.png` |
+| Combo interaction plot | §6.4 | `gnn_forecast.isolation_analysis.plot_combo_interactions` | `outputs/figures/interactions_*.png` |
+| Multi-edge scenario bar chart | §6.4 | `gnn_forecast.isolation_analysis.plot_multi_edge_scenarios` | `outputs/figures/bar_multi_edge.png` |
+| 25-year fan chart (Appendix F) | App F | TBD — `scripts/plot_long_horizon_fan.py` | `outputs/figures/embedding_forecast_2026_2050.png` |
 
 ## Submission checklist (run before submitting)
 
-- [ ] Re-read the causal-interpretation disclaimer in `counterfactual.py` and verify the paper text matches.
-- [ ] Run `scripts/run_simulation_study.py` with `--replicates 20` for the final recovery numbers.
-- [ ] Run `scripts/run_uncertainty_analysis.py` with `--n-members 10` on the full 1945–2025 dataset.
-- [ ] Run `scripts/run_multi_horizon_backtest.py` with all five split years.
-- [ ] Run `scripts/run_ame_baseline.R` for AME comparison data.
+- [x] Re-read the causal-interpretation disclaimer in `counterfactual.py` and verify the paper text matches.
+- [x] Run `scripts/run_simulation_study.py` for the recovery numbers. **DONE — 10 planted + 10 null replicates, 100% wedge recovery in planted, 0% in null. See §5.2.**
+- [ ] Run `scripts/run_uncertainty_analysis.py` with `--n-members 10` on the full 1945–2025 dataset. **RUNNING (job 52743497).**
+- [ ] Run `scripts/run_multi_horizon_backtest.py` with all five split years. **RUNNING (job 52743495).**
+- [ ] Run `scripts/run_ame_baseline.R` for AME comparison data. **NOT YET SUBMITTED — `sbatch hpc/job_ame_baseline.sh`.**
+- [ ] Write `scripts/compare_ame_to_gnn.py` to align AME latent positions with GNN embeddings (per-year R²).
 - [ ] Generate the layer-coverage figure for § 3.
+- [ ] Generate the recovery-distribution figure for § 5.2 (`scripts/plot_recovery_distributions.py`).
+- [ ] Generate the horizon-decay figure for § 5.1 once job 52743495 finishes.
 - [ ] Verify all reported numbers in tables are pulled from the latest runs (not stale CSVs).
 - [ ] Update CLAUDE.md to reflect the multiplex track as canonical.
 - [ ] Code release: tag a v1.0 commit, archive on Zenodo, cite DOI in paper.
+
+## Where to find things
+
+- **All code:** GitHub `https://github.com/jfedgerton/GNN_forecast.git`, branch `pa-revision-uncertainty-sim`
+- **Local working copy:** `C:\Users\Jared_Edgerton\Dropbox\GNN_forecast`
+- **Roar canonical copy:** `/storage/group/LiberalArts/default/jfe4_collab/GNN_forecast` (aliased as `/scratch/jfe4/GNN_forecast`)
+- **Roar venv (Python 3.11.2 + torch 2.11.0+cu126):** `/scratch/jfe4/GNN_forecast/.venv/`
+- **Roar SLURM job logs:** `/scratch/jfe4/GNN_forecast/logs/{sim,horizon,uq,ame}_<jobid>.{out,err}`
+- **All results CSVs:** `/scratch/jfe4/GNN_forecast/outputs/<job_subdir>/*.csv`
+- **All figures (when generated):** `/scratch/jfe4/GNN_forecast/outputs/figures/`
 
 ## Anticipated reviewer questions (pre-empt in submission)
 

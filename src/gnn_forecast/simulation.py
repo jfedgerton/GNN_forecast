@@ -269,11 +269,45 @@ def _run_one_replicate(
     )
     df = dual_results_to_dataframe(dual_results)
 
-    usa_iso = df.sort_values("usa_delta_cosine").reset_index(drop=True)
-    chn_iso = df.sort_values("chn_delta_cosine").reset_index(drop=True)
-    df_w = df.copy()
-    df_w["abs_wedge"] = df_w["wedge_cosine"].abs()
-    wedge = df_w.sort_values("abs_wedge", ascending=False).reset_index(drop=True)
+    # ----------------------------------------------------------------
+    # Two ranking families:
+    #
+    # (A) Centroid-PROXIMITY rankings (cosine-based). Sorts by
+    #     usa_delta_cosine ascending: most-decreased = focal pulled
+    #     furthest in the direction of "atypical." This metric
+    #     measures EMBEDDING TYPICALITY, not graph isolation.
+    #     Removing a strong tie tends to MAKE A NODE MORE TYPICAL
+    #     (so the planted edge appears at the bottom of this sort).
+    #     Kept for backward compatibility and as a diagnostic.
+    #
+    # (B) Centroid-DISTANCE rankings (Euclidean). Sorts by
+    #     usa_delta_centroid descending: most-increased = focal
+    #     pushed furthest from the centroid of all other embeddings.
+    #     This is the operational definition of isolation we want
+    #     and what the planted-edge recovery should pick up.
+    # ----------------------------------------------------------------
+
+    # (A) Centroid proximity rankings
+    usa_proximity = df.sort_values("usa_delta_cosine").reset_index(drop=True)
+    chn_proximity = df.sort_values("chn_delta_cosine").reset_index(drop=True)
+    df_wp = df.copy()
+    df_wp["abs_wedge_proximity"] = df_wp["wedge_cosine"].abs()
+    wedge_proximity = df_wp.sort_values(
+        "abs_wedge_proximity", ascending=False,
+    ).reset_index(drop=True)
+
+    # (B) Centroid distance rankings (true isolation)
+    usa_isolation = df.sort_values(
+        "usa_delta_centroid", ascending=False,
+    ).reset_index(drop=True)
+    chn_isolation = df.sort_values(
+        "chn_delta_centroid", ascending=False,
+    ).reset_index(drop=True)
+    df_wi = df.copy()
+    df_wi["abs_wedge_isolation"] = df_wi["wedge_centroid"].abs()
+    wedge_isolation = df_wi.sort_values(
+        "abs_wedge_isolation", ascending=False,
+    ).reset_index(drop=True)
 
     def find_rank(d: pd.DataFrame) -> int:
         mask = (
@@ -285,9 +319,15 @@ def _run_one_replicate(
             return -1
         return int(d.index[mask][0]) + 1
 
-    usa_rank = find_rank(usa_iso)
-    chn_rank = find_rank(chn_iso)
-    wedge_rank = find_rank(wedge)
+    # Proximity ranks (cosine-based, the original/diagnostic metric)
+    usa_proximity_rank = find_rank(usa_proximity)
+    chn_proximity_rank = find_rank(chn_proximity)
+    wedge_proximity_rank = find_rank(wedge_proximity)
+
+    # Isolation ranks (centroid-distance-based, the headline metric)
+    usa_isolation_rank = find_rank(usa_isolation)
+    chn_isolation_rank = find_rank(chn_isolation)
+    wedge_isolation_rank = find_rank(wedge_isolation)
 
     return {
         "seed": seed,
@@ -296,12 +336,28 @@ def _run_one_replicate(
         "planted_partner_ccode": synth.planted_partner,
         "planted_layer": synth.planted_layer,
         "planted_operation": synth.planted_operation,
-        "usa_isolation_rank": usa_rank,
-        "chn_isolation_rank": chn_rank,
-        "wedge_rank": wedge_rank,
-        f"recovered_in_top{top_k}_usa": usa_rank > 0 and usa_rank <= top_k,
-        f"recovered_in_top{top_k}_chn": chn_rank > 0 and chn_rank <= top_k,
-        f"recovered_in_top{top_k}_wedge": wedge_rank > 0 and wedge_rank <= top_k,
+        # Headline isolation rankings (centroid-distance-based)
+        "usa_isolation_rank": usa_isolation_rank,
+        "chn_isolation_rank": chn_isolation_rank,
+        "wedge_isolation_rank": wedge_isolation_rank,
+        f"recovered_in_top{top_k}_usa_isolation":
+            usa_isolation_rank > 0 and usa_isolation_rank <= top_k,
+        f"recovered_in_top{top_k}_chn_isolation":
+            chn_isolation_rank > 0 and chn_isolation_rank <= top_k,
+        f"recovered_in_top{top_k}_wedge_isolation":
+            wedge_isolation_rank > 0 and wedge_isolation_rank <= top_k,
+        # Diagnostic proximity rankings (cosine-based; measures typicality)
+        "usa_centroid_proximity_rank": usa_proximity_rank,
+        "chn_centroid_proximity_rank": chn_proximity_rank,
+        "wedge_centroid_proximity_rank": wedge_proximity_rank,
+        f"recovered_in_top{top_k}_usa_proximity":
+            usa_proximity_rank > 0 and usa_proximity_rank <= top_k,
+        f"recovered_in_top{top_k}_chn_proximity":
+            chn_proximity_rank > 0 and chn_proximity_rank <= top_k,
+        f"recovered_in_top{top_k}_wedge_proximity":
+            wedge_proximity_rank > 0 and wedge_proximity_rank <= top_k,
+        # Backward-compat alias for the original "wedge_rank" column name
+        "wedge_rank": wedge_proximity_rank,
         "n_perturbations_total": len(df),
     }
 
@@ -375,33 +431,44 @@ def run_recovery_study(
         df_out.to_csv(save_path / "recovery_study.csv", index=False)
 
         # Summary broken out by scenario (planted vs. null) for the
-        # 2x2 calibration table the paper needs.
+        # 2x2 calibration table the paper needs. Reports BOTH metric
+        # families: centroid-distance-based isolation (the headline)
+        # and centroid-proximity (cosine, the diagnostic).
         summary_rows = []
         for scenario in df_out["scenario"].unique():
             sub = df_out[df_out["scenario"] == scenario]
             summary_rows.append({
                 "scenario": scenario,
                 "n_replicates": len(sub),
-                f"top{top_k}_usa_recovery_rate": sub[f"recovered_in_top{top_k}_usa"].mean(),
-                f"top{top_k}_chn_recovery_rate": sub[f"recovered_in_top{top_k}_chn"].mean(),
-                f"top{top_k}_wedge_recovery_rate": sub[f"recovered_in_top{top_k}_wedge"].mean(),
-                "median_usa_rank": sub["usa_isolation_rank"].median(),
-                "median_chn_rank": sub["chn_isolation_rank"].median(),
-                "median_wedge_rank": sub["wedge_rank"].median(),
+                # Isolation (centroid-distance) — headline metric
+                f"top{top_k}_usa_isolation_recovery": sub[f"recovered_in_top{top_k}_usa_isolation"].mean(),
+                f"top{top_k}_chn_isolation_recovery": sub[f"recovered_in_top{top_k}_chn_isolation"].mean(),
+                f"top{top_k}_wedge_isolation_recovery": sub[f"recovered_in_top{top_k}_wedge_isolation"].mean(),
+                "median_usa_isolation_rank": sub["usa_isolation_rank"].median(),
+                "median_chn_isolation_rank": sub["chn_isolation_rank"].median(),
+                "median_wedge_isolation_rank": sub["wedge_isolation_rank"].median(),
+                # Proximity (cosine) — diagnostic
+                f"top{top_k}_usa_proximity_recovery": sub[f"recovered_in_top{top_k}_usa_proximity"].mean(),
+                f"top{top_k}_chn_proximity_recovery": sub[f"recovered_in_top{top_k}_chn_proximity"].mean(),
+                f"top{top_k}_wedge_proximity_recovery": sub[f"recovered_in_top{top_k}_wedge_proximity"].mean(),
+                "median_usa_proximity_rank": sub["usa_centroid_proximity_rank"].median(),
+                "median_chn_proximity_rank": sub["chn_centroid_proximity_rank"].median(),
+                "median_wedge_proximity_rank": sub["wedge_centroid_proximity_rank"].median(),
             })
         summary_df = pd.DataFrame(summary_rows)
         summary_df.to_csv(save_path / "recovery_summary.csv", index=False)
         # Also export the legacy single-row summary for the planted scenario only
         # so downstream consumers that read recovery_summary.csv as one row keep working.
+        # Uses the headline isolation metric (centroid-distance) for the legacy fields.
         if "planted" in df_out["scenario"].values:
             planted = df_out[df_out["scenario"] == "planted"]
             legacy = {
-                f"top{top_k}_usa_recovery_rate": planted[f"recovered_in_top{top_k}_usa"].mean(),
-                f"top{top_k}_chn_recovery_rate": planted[f"recovered_in_top{top_k}_chn"].mean(),
-                f"top{top_k}_wedge_recovery_rate": planted[f"recovered_in_top{top_k}_wedge"].mean(),
+                f"top{top_k}_usa_recovery_rate": planted[f"recovered_in_top{top_k}_usa_isolation"].mean(),
+                f"top{top_k}_chn_recovery_rate": planted[f"recovered_in_top{top_k}_chn_isolation"].mean(),
+                f"top{top_k}_wedge_recovery_rate": planted[f"recovered_in_top{top_k}_wedge_isolation"].mean(),
                 "median_usa_rank": planted["usa_isolation_rank"].median(),
                 "median_chn_rank": planted["chn_isolation_rank"].median(),
-                "median_wedge_rank": planted["wedge_rank"].median(),
+                "median_wedge_rank": planted["wedge_isolation_rank"].median(),
                 "n_replicates": len(planted),
             }
             pd.DataFrame([legacy]).to_csv(save_path / "recovery_summary_planted.csv", index=False)

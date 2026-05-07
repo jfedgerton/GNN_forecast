@@ -72,7 +72,24 @@ MAJOR_POWER_CCODES = {
 
 @dataclass
 class EmbeddednessMetrics:
-    """Embeddedness measures for a single state in the embedding space."""
+    """Embeddedness measures for a single state in the embedding space.
+
+    Note on naming (post-simulation-validation, 2026-05-06):
+      - `mean_cosine_similarity` measures EMBEDDING TYPICALITY — how
+        similar the focal node's embedding is to the average of all
+        other nodes. High values mean the focal looks like a "typical"
+        country in the system. Removing a strong tie tends to INCREASE
+        this (the focal becomes more generic), so it is NOT a measure
+        of graph-theoretic isolation. Access this value via the
+        equivalent property `centroid_proximity` for clearer naming
+        in new code; the old field name is kept for backward compat.
+      - `centroid_distance` measures TRUE ISOLATION — Euclidean
+        distance from the focal to the centroid of all other
+        embeddings. Removing a key tie pushes the focal away from
+        the system center, so this value INCREASES under isolation.
+        Use this metric when you want a graph-theoretic notion of
+        "how peripheral did this country become."
+    """
     ccode: int
     mean_cosine_similarity: float
     centroid_distance: float
@@ -80,6 +97,11 @@ class EmbeddednessMetrics:
     knn_density: float  # avg distance to k-nearest neighbors
     # Optional: cosine sim to specific partners
     partner_similarities: Optional[Dict[int, float]] = None
+
+    @property
+    def centroid_proximity(self) -> float:
+        """Alias for `mean_cosine_similarity` with a more accurate name."""
+        return self.mean_cosine_similarity
 
 
 @dataclass

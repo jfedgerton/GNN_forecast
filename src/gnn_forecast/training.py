@@ -400,28 +400,3 @@ def forecast_embeddings(
             history.append(pred)
 
     return forecasts
-} years, got {len(years)}")
-
-    # Encode last seq_len years
-    history: List[torch.Tensor] = []
-    with torch.no_grad():
-        for year in years[-seq_len:]:
-            snap = dataset.snapshots[year]
-            nf = snap.node_features.to(device)
-            ei = {k: v.to(device) for k, v in snap.edge_indices.items()}
-            ew = {k: v.to(device) for k, v in snap.edge_weights.items()}
-            emb = model.encode_snapshot(nf, ei, ew, snap.layer_mask)
-            history.append(emb)
-
-    # Autoregressive rollout
-    last_year = years[-1]
-    forecasts: Dict[int, torch.Tensor] = {}
-
-    with torch.no_grad():
-        for step in range(n_steps):
-            pred = model.forward_temporal(history[-seq_len:])
-            future_year = last_year + step + 1
-            forecasts[future_year] = pred.cpu()
-            history.append(pred)
-
-    return forecasts

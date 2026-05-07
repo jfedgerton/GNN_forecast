@@ -28,13 +28,24 @@ from .multiplex_model import MultiplexTemporalGNN, MultiplexGNNConfig
 
 @dataclass
 class TrainingConfig:
-    """Hyperparameters for training."""
+    """Hyperparameters for training.
+
+    NOTE on lambda_link and lambda_anti_collapse (added 2026-05-06 after
+    encoder-collapse incident on the full Roar dataset): with the original
+    lambda_link=0.1 and no anti-collapse term, the model converged to the
+    trivial all-zero embedding solution on 204-node real data — link loss
+    barely dropped below 0.693 (chance baseline for BCE on uniform 0.5).
+    Bumping lambda_link to 1.0 strengthens the link-reconstruction signal
+    sufficiently to push the encoder away from zero. The anti-collapse
+    term explicitly penalizes mean embedding norms below 1.0.
+    """
     learning_rate: float = 1e-3
     weight_decay: float = 1e-5
     num_epochs: int = 100
     seq_len: int = 5              # window of years for temporal model
-    lambda_link: float = 0.1      # weight for link reconstruction loss
+    lambda_link: float = 1.0      # weight for link reconstruction loss (was 0.1; raised 2026-05-06)
     lambda_smooth: float = 0.01   # weight for temporal smoothness penalty
+    lambda_anti_collapse: float = 0.05  # penalty for mean embedding norm below 1.0
     link_sample_size: int = 500   # number of node pairs to sample for link loss
     patience: int = 20            # early stopping patience
     min_delta: float = 1e-4       # minimum improvement for early stopping
@@ -170,6 +181,7 @@ def train_model(
         epoch_emb_loss = 0.0
         epoch_link_loss = 0.0
         epoch_smooth_loss = 0.0
+        epoch_mean_norm = 0.0
         n_windows = 0
 
         # Slide window over years. Re-encode within each window to avoid
@@ -226,8 +238,20 @@ def train_model(
             # Temporal smoothness penalty
             l_smooth = F.mse_loss(pred_emb, emb_seq[-1].detach())
 
+            # Anti-collapse penalty: penalize when mean embedding norm
+            # falls below 1.0. Uses the predicted embedding (which is the
+            # GRU output) so that gradient flows through both the GRU
+            # head and the encoder via the input history.
+            mean_norm = pred_emb.norm(dim=1).mean()
+            l_anti_collapse = F.relu(1.0 - mean_norm)
+
             # Total loss
-            loss = l_emb + train_config.lambda_link * l_link + train_config.lambda_smooth * l_smooth
+            loss = (
+                l_emb
+                + train_config.lambda_link * l_link
+                + train_config.lambda_smooth * l_smooth
+                + train_config.lambda_anti_collapse * l_anti_collapse
+            )
 
             optimizer.zero_grad()
             loss.backward()
@@ -237,6 +261,7 @@ def train_model(
             epoch_emb_loss += l_emb.item()
             epoch_link_loss += l_link.item()
             epoch_smooth_loss += l_smooth.item()
+            epoch_mean_norm += float(mean_norm.detach().cpu())
             n_windows += 1
 
         avg_loss = epoch_loss / max(n_windows, 1)
@@ -247,6 +272,7 @@ def train_model(
             "emb_loss": epoch_emb_loss / max(n_windows, 1),
             "link_loss": epoch_link_loss / max(n_windows, 1),
             "smooth_loss": epoch_smooth_loss / max(n_windows, 1),
+            "mean_emb_norm": epoch_mean_norm / max(n_windows, 1),
         })
 
         if (epoch + 1) % train_config.print_every == 0 or epoch == 0:
@@ -254,7 +280,8 @@ def train_model(
                   f"loss={avg_loss:.6f} "
                   f"(emb={epoch_details[-1]['emb_loss']:.6f}, "
                   f"link={epoch_details[-1]['link_loss']:.6f}, "
-                  f"smooth={epoch_details[-1]['smooth_loss']:.6f})")
+                  f"smooth={epoch_details[-1]['smooth_loss']:.6f}, "
+                  f"||z||={epoch_details[-1]['mean_emb_norm']:.4f})")
 
         # Early stopping
         if avg_loss < best_loss - train_config.min_delta:

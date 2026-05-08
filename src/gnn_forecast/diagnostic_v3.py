@@ -382,4 +382,10 @@ def run_v3_diagnostic(
     return V3Result(
         name="v3_rgcn_sparse_layers_strat_auc",
         layer_set=list(dataset.layer_names),
-  
+        final_link_auc=auc_history[-1],
+        final_mean_norm=mean_norm,
+        n_epochs_run=num_epochs,
+        loss_history=loss_history,
+        auc_history=auc_history,
+        notes=verdict,
+    )

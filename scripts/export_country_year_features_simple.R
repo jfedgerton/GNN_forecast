@@ -77,25 +77,33 @@ build_log <- function(x) ifelse(is.na(x) | x <= 0, NA_real_, log(x))
 get_col   <- function(df, name) if (name %in% names(df)) df[[name]] else rep(NA_real_, nrow(df))
 
 # add_sim_gdp_pop() column names vary across peacesciencer versions:
-#   newer (>=1.2): wbgdp2011est, wbpopest          (already log-scale)
+#   current (Roar): pwtrgdp, pwtpop                (RAW PWT values — need log1p)
+#   newer (>=1.2):  wbgdp2011est, wbpopest         (already log-scale)
 #   older (1.0-1.1): sdpest, popest                (already log-scale)
-# Try newer first, fall back to older. Report which we found.
-gdp_col <- intersect(c("wbgdp2011est", "sdpest"), names(panel))[1]
-pop_col <- intersect(c("wbpopest",     "popest"), names(panel))[1]
+# Try them in priority order; for raw PWT values apply log1p, for already-log
+# values pass through. mrgdppc (Maddison real GDP per capita) is a backup.
+gdp_col <- intersect(c("pwtrgdp", "wbgdp2011est", "sdpest"), names(panel))[1]
+pop_col <- intersect(c("pwtpop",  "wbpopest",     "popest"), names(panel))[1]
 if (is.na(gdp_col)) {
-  cat("  WARNING: no GDP column found in panel (looked for wbgdp2011est, sdpest)\n")
+  cat("  WARNING: no GDP column found in panel\n")
   cat("  available columns:", paste(names(panel), collapse = ", "), "\n")
 } else {
   cat("  GDP column found:", gdp_col, "\n")
 }
 if (is.na(pop_col)) {
-  cat("  WARNING: no population column found in panel (looked for wbpopest, popest)\n")
+  cat("  WARNING: no population column found in panel\n")
 } else {
   cat("  Pop column found:", pop_col, "\n")
 }
 
-lp_gdp_vec <- if (!is.na(gdp_col)) panel[[gdp_col]] else rep(NA_real_, nrow(panel))
-lp_pop_vec <- if (!is.na(pop_col)) panel[[pop_col]] else rep(NA_real_, nrow(panel))
+# pwtrgdp and pwtpop are raw values; older sim-est columns are already log.
+needs_log <- function(col_name) {
+  col_name %in% c("pwtrgdp", "pwtpop")
+}
+raw_gdp <- if (!is.na(gdp_col)) panel[[gdp_col]] else rep(NA_real_, nrow(panel))
+raw_pop <- if (!is.na(pop_col)) panel[[pop_col]] else rep(NA_real_, nrow(panel))
+lp_gdp_vec <- if (!is.na(gdp_col) && needs_log(gdp_col)) log1p(raw_gdp) else raw_gdp
+lp_pop_vec <- if (!is.na(pop_col) && needs_log(pop_col)) log1p(raw_pop) else raw_pop
 
 out <- tibble(
   ccode      = panel$ccode,

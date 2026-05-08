@@ -76,12 +76,33 @@ if (!is.null(cap_coords)) {
 build_log <- function(x) ifelse(is.na(x) | x <= 0, NA_real_, log(x))
 get_col   <- function(df, name) if (name %in% names(df)) df[[name]] else rep(NA_real_, nrow(df))
 
+# add_sim_gdp_pop() column names vary across peacesciencer versions:
+#   newer (>=1.2): wbgdp2011est, wbpopest          (already log-scale)
+#   older (1.0-1.1): sdpest, popest                (already log-scale)
+# Try newer first, fall back to older. Report which we found.
+gdp_col <- intersect(c("wbgdp2011est", "sdpest"), names(panel))[1]
+pop_col <- intersect(c("wbpopest",     "popest"), names(panel))[1]
+if (is.na(gdp_col)) {
+  cat("  WARNING: no GDP column found in panel (looked for wbgdp2011est, sdpest)\n")
+  cat("  available columns:", paste(names(panel), collapse = ", "), "\n")
+} else {
+  cat("  GDP column found:", gdp_col, "\n")
+}
+if (is.na(pop_col)) {
+  cat("  WARNING: no population column found in panel (looked for wbpopest, popest)\n")
+} else {
+  cat("  Pop column found:", pop_col, "\n")
+}
+
+lp_gdp_vec <- if (!is.na(gdp_col)) panel[[gdp_col]] else rep(NA_real_, nrow(panel))
+lp_pop_vec <- if (!is.na(pop_col)) panel[[pop_col]] else rep(NA_real_, nrow(panel))
+
 out <- tibble(
   ccode      = panel$ccode,
   year       = panel$year,
-  lp_gdp     = get_col(panel, "sdpest"),
-  lp_pop     = get_col(panel, "popest"),
-  lp_gdppc   = get_col(panel, "sdpest") - get_col(panel, "popest"),
+  lp_gdp     = lp_gdp_vec,
+  lp_pop     = lp_pop_vec,
+  lp_gdppc   = lp_gdp_vec - lp_pop_vec,
   polity2    = get_col(panel, "polity2"),
   cinc       = get_col(panel, "cinc"),
   milex_log  = build_log(get_col(panel, "milex")),

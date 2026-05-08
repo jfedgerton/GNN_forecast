@@ -5,11 +5,13 @@
 # (ccode1, ccode2, year) triples where BOTH states are COW system members
 # in that year, and write each layer as a standard CSV.
 #
-# Layers exported:
-#   layer_fta_undirected.csv         from agree_fta
-#   layer_pta_goods_undirected.csv   from agree_pta_goods
-#   layer_cu_undirected.csv          from agree_cu
-#   layer_eia_undirected.csv         from agree_eia
+# Layers exported (pruned 3-layer non-redundant set):
+#   layer_fta_undirected.csv          from agree_fta          — trade alignment
+#   layer_pta_services_undirected.csv from agree_pta_services — services depth
+#   layer_cu_undirected.csv           from agree_cu           — deep integration
+#
+# Dropped agree_eia (superset of the three above, causes R-GCN relation
+# collinearity) and agree_pta_goods (near-duplicate of agree_fta).
 #
 # Requires:
 #   data/processed/cow_state_membership.csv (build with export_cow_membership.R first)
@@ -142,10 +144,14 @@ write_layer <- function(dgd_df, var, out_path) {
 
 dir.create("data/processed", showWarnings = FALSE, recursive = TRUE)
 
-cat("\nWriting COW-filtered layer files\n")
-write_layer(dgd, "agree_fta",       "data/processed/layer_fta_undirected.csv")
-write_layer(dgd, "agree_pta_goods", "data/processed/layer_pta_goods_undirected.csv")
-write_layer(dgd, "agree_cu",        "data/processed/layer_cu_undirected.csv")
-write_layer(dgd, "agree_eia",       "data/processed/layer_eia_undirected.csv")
+cat("\nWriting COW-filtered layer files (pruned 3-layer set)\n")
+# Three non-redundant strategic-integration layers:
+#   FTA          = trade alignment (workhorse, captures CPTPP/RCEP/USMCA)
+#   PTA-services = depth of integration in services (post-1995 GATS era)
+#   CU           = deepest integration (very sparse, very high signal)
+# Dropped: agree_eia (superset, collinear), agree_pta_goods (near-duplicate of FTA).
+write_layer(dgd, "agree_fta",          "data/processed/layer_fta_undirected.csv")
+write_layer(dgd, "agree_pta_services", "data/processed/layer_pta_services_undirected.csv")
+write_layer(dgd, "agree_cu",           "data/processed/layer_cu_undirected.csv")
 
 cat("\nDone.\n")

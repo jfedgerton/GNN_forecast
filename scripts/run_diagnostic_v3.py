@@ -170,9 +170,11 @@ def main() -> None:
     print("\n" + "=" * 60)
     print("RUNNING v3 HYPOTHESIS TEST")
     print("=" * 60)
+    encoder_state_path = str(out_dir / "diagnostic_v3_encoder.pt")
     result = run_v3_diagnostic(
         dataset, feat_set.by_year, feat_set.num_features,
         num_epochs=args.num_epochs,
+        encoder_state_path=encoder_state_path,
     )
 
     # ---- Save outputs ----
@@ -180,6 +182,9 @@ def main() -> None:
         "name": result.name,
         "layer_set": ",".join(result.layer_set),
         "final_link_auc": result.final_link_auc,
+        "best_link_auc": result.best_link_auc,
+        "best_epoch": result.best_epoch,
+        "best_mean_norm": result.best_mean_norm,
         "final_mean_norm": result.final_mean_norm,
         "n_epochs_run": result.n_epochs_run,
         "notes": result.notes,
@@ -195,9 +200,10 @@ def main() -> None:
     print(f"\nSaved to {out_dir}")
 
     print(f"\n=== VERDICT ===")
-    print(f"  layers used:    {', '.join(result.layer_set)}")
-    print(f"  stratified AUC: {result.final_link_auc:.4f}")
-    print(f"  mean ||z||:     {result.final_mean_norm:.4f}")
+    print(f"  layers used:     {', '.join(result.layer_set)}")
+    print(f"  best AUC:        {result.best_link_auc:.4f} (epoch {result.best_epoch}/{result.n_epochs_run})")
+    print(f"  final-epoch AUC: {result.final_link_auc:.4f}")
+    print(f"  best ||z||:      {result.best_mean_norm:.4f}")
     print(f"  {result.notes}")
 
 

@@ -291,6 +291,11 @@ class V3Result:
     loss_history: List[float]
     auc_history: List[float]
     notes: str
+    # Early-stopping artifacts (added 2026-05-08): the best-AUC checkpoint
+    # is the encoder state we recommend using for downstream interventions.
+    best_link_auc: float = 0.0
+    best_epoch: int = 0
+    best_mean_norm: float = 0.0
 
 
 def run_v3_diagnostic(
@@ -306,9 +311,16 @@ def run_v3_diagnostic(
     temperature: float = 0.5,
     seed: int = SEED,
     device: Optional[torch.device] = None,
+    encoder_state_path: Optional[str] = None,
 ) -> V3Result:
     """Train R-GCN + InfoNCE on the sparse strategic-alignment dataset,
-    evaluate with stratified-negatives AUC."""
+    evaluate with stratified-negatives AUC.
+
+    If `encoder_state_path` is provided, save the best-AUC encoder
+    state_dict to that path along with the encoder config (sufficient to
+    rebuild the encoder for downstream feature/edge interventions and
+    GRU training).
+    """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(seed)
@@ -331,6 +343,17 @@ def run_v3_diagnostic(
 
     loss_history: List[float] = []
     auc_history: List[float] = []
+
+    # Early-stopping bookkeeping: track the encoder state at the epoch with
+    # the best stratified AUC. We don't terminate training early -- we just
+    # remember which weights to restore at the end. This is "best-model-by-
+    # validation-AUC" rather than true early stopping with patience.
+    best_auc: float = -1.0
+    best_epoch: int = 0
+    best_mean_norm: float = 0.0
+    best_state: Dict[str, torch.Tensor] = {
+        k: v.detach().cpu().clone() for k, v in encoder.state_dict().items()
+    }
 
     for epoch in range(num_epochs):
         encoder.train()
@@ -368,15 +391,49 @@ def run_v3_diagnostic(
             mean_norm = float(emb.norm(dim=1).mean().cpu())
         auc_history.append(auc)
 
+        # Track the best-so-far checkpoint
+        if auc > best_auc:
+            best_auc = auc
+            best_epoch = epoch + 1
+            best_mean_norm = mean_norm
+            best_state = {
+                k: v.detach().cpu().clone() for k, v in encoder.state_dict().items()
+            }
+
         if (epoch + 1) % 25 == 0 or epoch == 0:
             print(f"  epoch {epoch+1}/{num_epochs} infonce={avg:.4f} "
                   f"strat_auc={auc:.4f} ||z||={mean_norm:.4f}")
 
+    # Restore the best-AUC encoder state before returning, so downstream
+    # consumers (counterfactual interventions, GRU training) get the best
+    # available embeddings.
+    encoder.load_state_dict(best_state)
+    print(f"  [early-stop] restored encoder to epoch {best_epoch}/{num_epochs} "
+          f"(best AUC = {best_auc:.4f}, final-epoch AUC = {auc_history[-1]:.4f})")
+
+    # Optionally persist the trained encoder + config for downstream use
+    # (counterfactual sweeps, GRU temporal head training, regime-shock
+    # cascade analysis). The stored payload is self-sufficient: the
+    # consumer can rebuild the encoder via HeterogeneousEncoder(num_nodes,
+    # HeterogeneousEncoderConfig(**enc_cfg_dict)) and load the state_dict.
+    if encoder_state_path is not None:
+        from dataclasses import asdict
+        torch.save({
+            "encoder_state_dict": best_state,
+            "encoder_config": asdict(enc_cfg),
+            "num_nodes": dataset.num_nodes,
+            "best_epoch": best_epoch,
+            "best_link_auc": best_auc,
+            "layer_names": list(dataset.layer_names),
+            "ccode_to_idx": dataset.ccode_to_idx,
+        }, encoder_state_path)
+        print(f"  [save] encoder weights -> {encoder_state_path}")
+
     verdict = (
         "GOOD — sparse layers + stratified AUC + R-GCN learns structure."
-        if auc_history[-1] > 0.7
+        if best_auc > 0.7
         else "WEAK — improvement but not decisive."
-        if auc_history[-1] > 0.55
+        if best_auc > 0.55
         else "FAIL — even with all fixes, link prediction at chance."
     )
     return V3Result(
@@ -388,4 +445,7 @@ def run_v3_diagnostic(
         loss_history=loss_history,
         auc_history=auc_history,
         notes=verdict,
+        best_link_auc=best_auc,
+        best_epoch=best_epoch,
+        best_mean_norm=best_mean_norm,
     )

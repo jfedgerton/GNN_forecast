@@ -58,16 +58,24 @@ import torch
 from .multiplex_model import MultiplexTemporalGNN
 from .multiplex_data import MultiplexSnapshot, MultiplexTemporalDataset
 
-# COW codes for major powers (P5)
+# COW codes for major powers (P5 + India, the four-focal set used in the
+# regime-shock + multi-focal edge intervention analyses).
 USA_CCODE = 2
 CHN_CCODE = 710
+RUS_CCODE = 365
+IND_CCODE = 750
 MAJOR_POWER_CCODES = {
     2: "USA",
     200: "GBR",
     220: "FRA",
     365: "RUS",
     710: "CHN",
+    750: "IND",
 }
+
+# The fixed four-focal set used throughout §6 of the paper. Matches the
+# regime-shock scenarios in feature_intervention.POLITY_SHOCKS / CINC_SHOCKS.
+FOUR_FOCAL_CCODES = [USA_CCODE, CHN_CCODE, RUS_CCODE, IND_CCODE]
 
 
 @dataclass

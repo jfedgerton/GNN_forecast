@@ -253,7 +253,10 @@ def stratified_link_auc(
 
     all_s = np.concatenate([pos_scores, neg_scores])
     all_l = np.concatenate([np.ones(n_pos), np.zeros(n_pos)])
-    order = np.argsort(-all_s)
+    # Mann-Whitney AUC: P(score(positive) > score(negative)).
+    # Sort ascending; for each positive at rank i, count negatives ranked
+    # below it (they have lower scores, which is correct ordering).
+    order = np.argsort(all_s)
     sorted_l = all_l[order]
     n_p = sorted_l.sum()
     n_n = len(sorted_l) - n_p
@@ -379,10 +382,4 @@ def run_v3_diagnostic(
     return V3Result(
         name="v3_rgcn_sparse_layers_strat_auc",
         layer_set=list(dataset.layer_names),
-        final_link_auc=auc_history[-1],
-        final_mean_norm=mean_norm,
-        n_epochs_run=num_epochs,
-        loss_history=loss_history,
-        auc_history=auc_history,
-        notes=verdict,
-    )
+  

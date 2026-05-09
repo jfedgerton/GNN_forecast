@@ -296,3 +296,128 @@ def run_scenario_forecast(
         trajectory_baseline=base_traj,
         trajectory_counterfactual=cf_traj,
     )
+
+
+# ---------------------------------------------------------------
+# Edge-counterfactual forecast scenarios
+# ---------------------------------------------------------------
+
+@dataclass
+class EdgeScenarioConfig:
+    """One edge-perturbation forecast scenario.
+
+    The perturbation is applied at perturb_year (within the observed
+    window), and the GRU then rolls embeddings forward to the
+    forecast horizon. This is the paper #1 edge-counterfactual story
+    (no future edges; perturb in observed years, roll dynamics forward).
+    """
+    label: str
+    focal_ccode: int
+    partner_ccode: int
+    layer_name: str
+    operation: str               # "remove" or "add"
+    perturb_year: int = 2016     # year at which to apply the edge perturbation
+    symmetric_n_edges: int = 5
+
+
+def run_edge_scenario_forecast(
+    encoder: HeterogeneousEncoder,
+    gru: EmbeddingGRU,
+    dataset: MultiplexTemporalDataset,
+    feat_set: NodeFeatureSet,
+    config: EdgeScenarioConfig,
+    forecast_until_year: int = 2040,
+    seq_len: int = 5,
+    device: Optional[torch.device] = None,
+) -> ForecastScenarioResult:
+    """Edge-perturbation analog of run_scenario_forecast.
+
+    Builds the baseline embedding sequence by encoding observed years.
+    For the counterfactual: at perturb_year, replaces that year's
+    edges in the targeted layer with a symmetric add/remove of k edges
+    involving partner_idx, re-encodes that single snapshot, substitutes
+    it into the embedding sequence, then rolls the GRU forward to
+    forecast_until_year. Pre-perturb-year embeddings are unchanged.
+    """
+    from gnn_forecast.edge_intervention import _modify_edges_symmetric
+
+    if device is None:
+        device = next(encoder.parameters()).device
+    if config.focal_ccode not in dataset.ccode_to_idx:
+        raise ValueError(f"focal_ccode {config.focal_ccode} not in dataset")
+    if config.partner_ccode not in dataset.ccode_to_idx:
+        raise ValueError(f"partner_ccode {config.partner_ccode} not in dataset")
+    focal_idx = dataset.ccode_to_idx[config.focal_ccode]
+    partner_idx = dataset.ccode_to_idx[config.partner_ccode]
+
+    perturb_year = config.perturb_year
+    if perturb_year not in dataset.snapshots:
+        perturb_year = dataset.years[-1]
+
+    # Baseline encoding (no perturbation)
+    base_emb = encode_history(encoder, dataset, feat_set.by_year, device=device)
+
+    # Counterfactual: re-encode perturb_year with modified edges; copy other years
+    snap = dataset.snapshots[perturb_year]
+    nf = feat_set.by_year[perturb_year].to(device)
+    base_ei = {k: v.to(device) for k, v in snap.edge_indices.items()}
+    base_ew = {k: v.to(device) for k, v in snap.edge_weights.items()}
+    mod_ei, mod_ew = _modify_edges_symmetric(
+        base_ei, base_ew, config.layer_name, partner_idx, config.operation,
+        config.symmetric_n_edges, dataset.num_nodes, device,
+    )
+    encoder.eval()
+    with torch.no_grad():
+        cf_perturb_emb = encoder(nf, mod_ei, mod_ew, snap.layer_mask).detach().cpu()
+
+    cf_emb = dict(base_emb)
+    cf_emb[perturb_year] = cf_perturb_emb
+
+    base_fcst = rollout_forecast(gru, base_emb, forecast_until_year, seq_len)
+    cf_fcst = rollout_forecast(gru, cf_emb, forecast_until_year, seq_len)
+    base_combined = {**base_emb, **base_fcst}
+    cf_combined = {**cf_emb, **cf_fcst}
+
+    base_traj = trajectory_centroid_distance(base_combined, focal_idx)
+    cf_traj = trajectory_centroid_distance(cf_combined, focal_idx)
+    base_traj["scenario"] = "baseline"
+    cf_traj["scenario"] = config.label
+
+    return ForecastScenarioResult(
+        scenario_label=config.label,
+        focal_ccode=config.focal_ccode,
+        focal_idx=focal_idx,
+        trajectory_baseline=base_traj,
+        trajectory_counterfactual=cf_traj,
+    )
+
+
+# Pre-baked edge scenarios for the four-focal set. Each removes a key
+# bilateral tie at year 2016 and rolls forward to 2040.
+EDGE_SCENARIOS: List[EdgeScenarioConfig] = [
+    EdgeScenarioConfig(
+        label="USA_loses_KOR_alliance_2016",
+        focal_ccode=2, partner_ccode=732,
+        layer_name="defensive_alliances", operation="remove",
+    ),
+    EdgeScenarioConfig(
+        label="USA_loses_JPN_alliance_2016",
+        focal_ccode=2, partner_ccode=740,
+        layer_name="defensive_alliances", operation="remove",
+    ),
+    EdgeScenarioConfig(
+        label="CHN_gains_USA_FTA_2016",
+        focal_ccode=710, partner_ccode=2,
+        layer_name="fta", operation="add",
+    ),
+    EdgeScenarioConfig(
+        label="RUS_loses_CHN_alliance_2016",
+        focal_ccode=365, partner_ccode=710,
+        layer_name="defensive_alliances", operation="remove",
+    ),
+    EdgeScenarioConfig(
+        label="IND_gains_USA_dca_2016",
+        focal_ccode=750, partner_ccode=2,
+        layer_name="dca", operation="add",
+    ),
+]

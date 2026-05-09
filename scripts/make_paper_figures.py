@@ -312,6 +312,108 @@ def fig_forecast_baseline(outputs_dir: Path, figures_dir: Path) -> None:
     _save(fig, figures_dir / "fig_forecast_baseline.png")
 
 
+def fig_layer_coverage(outputs_dir: Path, figures_dir: Path) -> None:
+    """Layer-coverage matrix (years × layers, shaded where observed) for §3.
+
+    Uses the COW-filtered layer CSVs to determine which (year, layer)
+    cells are observed.
+    """
+    data_dir = outputs_dir.parent / "data" / "processed"
+    layers = {
+        "defensive_alliances": "layer_alliances_defensive_offensive_undirected.csv",
+        "offensive_alliances": "layer_alliances_defensive_offensive_undirected.csv",
+        "dca":                "layer_dca_undirected.csv",
+        "fta":                "layer_fta_undirected.csv",
+        "pta_services":       "layer_pta_services_undirected.csv",
+        "cu":                 "layer_cu_undirected.csv",
+    }
+    coverage_rows = []
+    for ln, fname in layers.items():
+        path = data_dir / fname
+        if not path.exists():
+            continue
+        df = pd.read_csv(path, usecols=["year"])
+        years = sorted(df["year"].unique())
+        for y in years:
+            coverage_rows.append({"layer": ln, "year": int(y)})
+    if not coverage_rows:
+        print("  skip layer_coverage: no layer CSVs found in data/processed")
+        return
+    cov = pd.DataFrame(coverage_rows)
+    pivot = (
+        cov.assign(observed=1)
+        .pivot_table(index="layer", columns="year", values="observed", fill_value=0)
+    )
+    fig, ax = plt.subplots(figsize=(13, 3.5))
+    im = ax.imshow(pivot.values, aspect="auto", cmap="Greens",
+                   interpolation="nearest", vmin=0, vmax=1)
+    ax.set_yticks(range(len(pivot.index)))
+    ax.set_yticklabels(pivot.index)
+    cols = list(pivot.columns)
+    decade_ticks = [i for i, y in enumerate(cols) if y % 10 == 0]
+    ax.set_xticks(decade_ticks)
+    ax.set_xticklabels([cols[i] for i in decade_ticks])
+    ax.set_xlabel("Year")
+    ax.set_title("Layer coverage matrix (green = observed)")
+    _save(fig, figures_dir / "fig_layer_coverage.png")
+
+
+def fig_recovery_distribution(outputs_dir: Path, figures_dir: Path) -> None:
+    """Two-panel side-by-side wedge-rank distribution: planted vs null.
+
+    Used in §5.2 to show that the planted-edge SBM produces a clean
+    rank distribution at the top while the null is uniform.
+    """
+    path = outputs_dir / "regime_shock_simulation" / "edge_recovery_per_replicate.csv"
+    if not path.exists():
+        print(f"  skip recovery_distribution: {path} not found")
+        return
+    df = pd.read_csv(path)
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4), sharey=True)
+    n_cands = int(df["n_candidates"].mean()) if "n_candidates" in df.columns else 174
+    bins = np.arange(0, n_cands + 10, 10)
+    for ax, scenario, color in [(axes[0], "planted", "C2"), (axes[1], "null", "C3")]:
+        sub = df[df["scenario"] == scenario]
+        ax.hist(sub["rank_centroid"], bins=bins, color=color, edgecolor="white")
+        ax.axvline(10, color="grey", ls="--", lw=0.7,
+                   label=f"top-10 cutoff ({(sub['rank_centroid'] <= 10).mean()*100:.0f}% of replicates)")
+        ax.set_title(scenario)
+        ax.set_xlabel("Wedge-magnitude rank of planted edge")
+        ax.legend(loc="upper right", fontsize=8)
+    axes[0].set_ylabel("Replicate count")
+    fig.suptitle("Planted-edge SBM recovery: planted clusters at the top, null is uniform")
+    _save(fig, figures_dir / "fig_recovery_distribution.png")
+
+
+def fig_edge_forecast_scenarios(outputs_dir: Path, figures_dir: Path) -> None:
+    """Baseline vs each edge-counterfactual trajectory, faceted by focal."""
+    base_path = outputs_dir / "forecast" / "baseline_trajectories.csv"
+    cf_path = outputs_dir / "forecast" / "edge_scenario_trajectories.csv"
+    if not (base_path.exists() and cf_path.exists()):
+        print(f"  skip edge_forecast_scenarios: missing {base_path} or {cf_path}")
+        return
+    base = pd.read_csv(base_path)
+    cf = pd.read_csv(cf_path)
+    focals = sorted(cf["focal_name"].unique())
+    n = len(focals)
+    rows_n = (n + 1) // 2
+    fig, axes = plt.subplots(rows_n, 2, figsize=(13, 3.5 * rows_n), sharex=True)
+    axes = axes.flatten() if hasattr(axes, "flatten") else [axes]
+    for ax, fc in zip(axes, focals):
+        b = base[base["focal_name"] == fc].sort_values("year")
+        ax.plot(b["year"], b["focal_centroid_dist"], "k-", lw=2, label="baseline")
+        for scen, sub in cf[cf["focal_name"] == fc].groupby("scenario"):
+            sub = sub.sort_values("year")
+            ax.plot(sub["year"], sub["focal_centroid_dist"], "--", lw=1,
+                    label=scen, alpha=0.85)
+        ax.axvline(2016, color="grey", ls=":", lw=0.6)
+        ax.set_title(fc)
+        ax.set_xlabel("Year"); ax.set_ylabel("Centroid distance")
+        ax.legend(fontsize=7, loc="upper left")
+    fig.suptitle("Baseline vs edge-counterfactual trajectories (1948-2040)")
+    _save(fig, figures_dir / "fig_edge_forecast_scenarios.png")
+
+
 def fig_forecast_scenarios(outputs_dir: Path, figures_dir: Path) -> None:
     """Baseline vs each counterfactual trajectory, faceted by focal."""
     base_path = outputs_dir / "forecast" / "baseline_trajectories.csv"
@@ -354,16 +456,17 @@ def main() -> None:
     print(f"Generating figures in {figures_dir}")
 
     figure_fns = [
+        fig_layer_coverage,            # NEW §3 layer-coverage matrix
         fig_diagnostic_training,
-        fig_planted_feature_recovery,
         fig_planted_edge_recovery,
-        fig_regime_shock_cascade,
+        fig_recovery_distribution,     # NEW §5.2 planted-vs-null distributions
         fig_top_wedge_edges,
         fig_layer_wedge_heatmap,
         fig_focal_scatter_usa_chn,
-        fig_joint_interaction,
         fig_forecast_baseline,
-        fig_forecast_scenarios,
+        fig_edge_forecast_scenarios,   # NEW §6 edge-counterfactual trajectories
+        # Archived (paper #2): fig_planted_feature_recovery, fig_regime_shock_cascade,
+        # fig_joint_interaction, fig_forecast_scenarios
     ]
     n_ok, n_fail = 0, 0
     import traceback

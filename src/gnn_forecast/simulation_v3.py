@@ -98,6 +98,18 @@ def generate_sbm_with_features(
     idx_to_ccode = {i: 1000 + i for i in range(num_nodes)}
     ccode_to_idx = {cc: idx for idx, cc in idx_to_ccode.items()}
 
+    # Generate node features ONCE. Features are static across the SBM
+    # lifetime (a country's regime type doesn't change year-by-year in
+    # this synthetic). 2 block-correlated dims + 2 noise dims.
+    feat = np.zeros((num_nodes, num_features), dtype=np.float32)
+    for i in range(num_nodes):
+        b = block_assignment[i]
+        feat[i, 0] = b + rng.normal(0, 0.5)
+        feat[i, 1] = b + rng.normal(0, 0.5)
+        feat[i, 2] = rng.normal(0, 1.0)
+        feat[i, 3] = rng.normal(0, 1.0)
+    node_feat_t = torch.tensor(feat, dtype=torch.float32)
+
     # Per-year, per-layer adjacency
     layer_names = [f"layer_{l}" for l in range(num_layers)]
     base_year = 2000
@@ -131,20 +143,13 @@ def generate_sbm_with_features(
             edge_weights[ln] = ew
             layer_mask[ln] = True
 
-        # Node features: block_id + small noise, plus pure noise dims
-        feat = np.zeros((num_nodes, num_features), dtype=np.float32)
-        for i in range(num_nodes):
-            b = block_assignment[i]
-            feat[i, 0] = b + rng.normal(0, 0.5)
-            feat[i, 1] = b + rng.normal(0, 0.5)
-            feat[i, 2] = rng.normal(0, 1.0)
-            feat[i, 3] = rng.normal(0, 1.0)
-
         snapshots[year] = MultiplexSnapshot(
             year=year,
+            num_nodes=num_nodes,
             edge_indices=edge_indices,
             edge_weights=edge_weights,
             layer_mask=layer_mask,
+            node_features=node_feat_t.clone(),
         )
 
     years = sorted(snapshots.keys())
@@ -159,14 +164,10 @@ def generate_sbm_with_features(
         snapshots=snapshots, nodes_df=nodes_df,
     )
 
-    # NodeFeatureSet — same value for every year (features are static
-    # over the SBM lifetime; this keeps the validation simple).
-    feat_t = torch.tensor(feat, dtype=torch.float32)
-    by_year = {y: feat_t.clone() for y in years}
+    # NodeFeatureSet — z-scored version of the same static feature panel
     feature_names = [f"f_{i}" for i in range(num_features)]
     means = feat.mean(axis=0)
     stds = feat.std(axis=0).clip(min=1e-6)
-    # Z-score
     feat_z = (feat - means) / stds
     feat_z_t = torch.tensor(feat_z, dtype=torch.float32)
     by_year_z = {y: feat_z_t.clone() for y in years}
@@ -408,4 +409,245 @@ def run_planted_shock_study(
                   f"hop-2={res.hop_2_mean_displacement:.3f}, "
                   f"hop-3+={res.hop_3plus_mean_displacement:.3f}, "
                   f"monotonic={res.monotonic_decay}")
+    return pd.DataFrame(rows)
+
+
+# ===============================================================
+# PLANTED-EDGE SBM (R-GCN edge intervention validation)
+# Mirrors the design of the planted-shock SBM, but the planted
+# treatment is an EDGE: focal_a gets k=12 extra ties to a partner
+# node in one layer; the recovery test asks whether removing that
+# partner's ties shows up in the top-K wedge ranking when we sweep
+# all candidate (partner, layer, operation) perturbations.
+# ===============================================================
+
+@dataclass
+class SBMPlantedEdge:
+    """An SBM with a planted asymmetric tie between two focals and a partner."""
+    dataset: MultiplexTemporalDataset
+    feat_set: NodeFeatureSet
+    focal_a_idx: int            # gets the extra ties (analog of USA)
+    focal_b_idx: int            # gets no extra ties (analog of China)
+    focal_a_ccode: int
+    focal_b_ccode: int
+    partner_idx: int            # the planted partner
+    partner_ccode: int
+    planted_layer: str          # which layer holds the planted edges
+    n_planted_edges: int
+
+
+def generate_sbm_with_planted_edge(
+    num_nodes: int = 60,
+    num_years: int = 30,
+    num_layers: int = 3,
+    num_blocks: int = 3,
+    intra_block: float = 0.30,
+    inter_block: float = 0.05,
+    num_features: int = 4,
+    n_planted_edges: int = 12,
+    null_scenario: bool = False,
+    seed: int = SEED,
+) -> SBMPlantedEdge:
+    """Build an SBM with two focal nodes and a planted asymmetric edge.
+
+    Focal A is node 0 (block 0). Focal B is node 1 (block 1). The
+    planted partner is the first block-2 node. In the planted scenario,
+    the partner receives `n_planted_edges` extra ties to focal A in
+    layer 0; the partner gets no extra ties to focal B (so removing the
+    partner's layer-0 edges should asymmetrically isolate focal A).
+
+    null_scenario=True: skip the planting (recovery should drop to chance).
+    """
+    rep = generate_sbm_with_features(
+        num_nodes=num_nodes, num_years=num_years, num_layers=num_layers,
+        num_blocks=num_blocks, intra_block=intra_block, inter_block=inter_block,
+        num_features=num_features, seed=seed,
+    )
+    # Reassign idx_to_ccode so focal A = USA (2), focal B = China (710)
+    # Make planted partner stand out via its ccode for downstream sweeps.
+    focal_a_idx, focal_b_idx = 0, 1
+    block2_indices = [
+        i for i in range(num_nodes)
+        if rep.block_assignment[i] == (num_blocks - 1)
+    ]
+    partner_idx = int(block2_indices[0])
+
+    new_idx_to_ccode = {i: 1000 + i for i in range(num_nodes)}
+    new_idx_to_ccode[focal_a_idx] = 2     # USA
+    new_idx_to_ccode[focal_b_idx] = 710   # China
+    new_ccode_to_idx = {cc: idx for idx, cc in new_idx_to_ccode.items()}
+
+    # Rebuild dataset with new ccode mapping (snapshots themselves are
+    # ccode-agnostic; only the dataset-level dicts change)
+    dataset = MultiplexTemporalDataset(
+        years=rep.dataset.years,
+        num_nodes=rep.dataset.num_nodes,
+        layer_names=rep.dataset.layer_names,
+        ccode_to_idx=new_ccode_to_idx,
+        idx_to_ccode=new_idx_to_ccode,
+        snapshots=rep.dataset.snapshots,
+        nodes_df=pd.DataFrame({
+            "ccode": [new_idx_to_ccode[i] for i in range(num_nodes)],
+            "block": [rep.block_assignment[i] for i in range(num_nodes)],
+        }),
+    )
+    planted_layer = rep.dataset.layer_names[0]
+
+    if not null_scenario:
+        # Plant n_planted_edges extra ties between focal_a_idx and partner_idx
+        # in planted_layer for every year. We add the same edges to every
+        # snapshot so the planting is persistent.
+        for year in dataset.years:
+            snap = dataset.snapshots[year]
+            ei = snap.edge_indices[planted_layer]
+            ew = snap.edge_weights[planted_layer]
+            extra_src = [focal_a_idx, partner_idx] * n_planted_edges
+            extra_tgt = [partner_idx, focal_a_idx] * n_planted_edges
+            new_e = torch.tensor([extra_src, extra_tgt], dtype=torch.long)
+            new_w = torch.ones(new_e.size(1))
+            if ei.numel() > 0:
+                snap.edge_indices[planted_layer] = torch.cat([ei, new_e], dim=1)
+                snap.edge_weights[planted_layer] = torch.cat([ew, new_w])
+            else:
+                snap.edge_indices[planted_layer] = new_e
+                snap.edge_weights[planted_layer] = new_w
+
+    return SBMPlantedEdge(
+        dataset=dataset,
+        feat_set=rep.feat_set,
+        focal_a_idx=focal_a_idx,
+        focal_b_idx=focal_b_idx,
+        focal_a_ccode=2,
+        focal_b_ccode=710,
+        partner_idx=partner_idx,
+        partner_ccode=new_idx_to_ccode[partner_idx],
+        planted_layer=planted_layer,
+        n_planted_edges=(0 if null_scenario else n_planted_edges),
+    )
+
+
+@dataclass
+class PlantedEdgeRecoveryResult:
+    replicate_id: int
+    scenario: str
+    focal_a_ccode: int
+    focal_b_ccode: int
+    partner_ccode: int
+    planted_layer: str
+    # Recovery diagnostics from the multi_focal_edge_sweep
+    rank_in_wedge_centroid: int   # 1 = top, lower is better
+    rank_in_wedge_cosine: int
+    wedge_centroid_top: float     # value of the top wedge for comparison
+    wedge_centroid_planted: float # value of the planted partner's wedge
+    n_candidates: int             # how many (partner, layer, op) candidates were ranked
+
+
+def run_planted_edge_replicate(
+    replicate_id: int,
+    scenario: str,             # "planted" or "null"
+    n_planted_edges: int = 12,
+    seed: int = SEED,
+    num_epochs: int = 50,
+    symmetric_n_edges: int = 5,
+) -> PlantedEdgeRecoveryResult:
+    """One SBM replicate. Trains R-GCN, runs multi_focal_edge_sweep,
+    and reports where the planted partner ranks in the wedge ranking
+    for the planted_layer + remove operation.
+    """
+    from gnn_forecast.edge_intervention import (
+        multi_focal_edge_sweep, pairwise_wedges,
+    )
+    rep = generate_sbm_with_planted_edge(
+        n_planted_edges=n_planted_edges,
+        null_scenario=(scenario == "null"),
+        seed=seed,
+    )
+    encoder = train_sbm_encoder(rep, num_epochs=num_epochs)
+
+    # Sweep over all (partner, layer, operation) candidates with USA + China focal
+    long_df = multi_focal_edge_sweep(
+        encoder=encoder,
+        dataset=rep.dataset,
+        feat_set=rep.feat_set,
+        focal_ccodes=[rep.focal_a_ccode, rep.focal_b_ccode],
+        focal_year=rep.dataset.years[-1],
+        symmetric_n_edges=symmetric_n_edges,
+        progress_every=10_000,  # quiet
+    )
+
+    def _wedge_rank(metric: str) -> tuple[int, float, float, int]:
+        wedges = pairwise_wedges(long_df, metric=metric)
+        # USA-vs-CHN wedge for remove operations only
+        sub = wedges[
+            (wedges["focal_a_ccode"] == rep.focal_a_ccode)
+            & (wedges["focal_b_ccode"] == rep.focal_b_ccode)
+            & (wedges["operation"] == "remove")
+        ].copy()
+        sub["abs_wedge"] = sub["wedge"].abs()
+        sub = sub.sort_values("abs_wedge", ascending=False).reset_index(drop=True)
+        # Find the row matching the planted (partner, layer)
+        match = sub[
+            (sub["partner_ccode"] == rep.partner_ccode)
+            & (sub["layer_name"] == rep.planted_layer)
+        ]
+        if match.empty:
+            return (len(sub) + 1, float(sub.iloc[0]["wedge"]) if len(sub) else 0.0, 0.0, len(sub))
+        rank = int(match.index[0]) + 1
+        wedge_top = float(sub.iloc[0]["wedge"])
+        wedge_planted = float(match.iloc[0]["wedge"])
+        return (rank, wedge_top, wedge_planted, len(sub))
+
+    rank_centroid, top_c, planted_c, n_c = _wedge_rank("delta_centroid")
+    rank_cosine, _, _, _ = _wedge_rank("delta_cosine")
+
+    return PlantedEdgeRecoveryResult(
+        replicate_id=replicate_id,
+        scenario=scenario,
+        focal_a_ccode=rep.focal_a_ccode,
+        focal_b_ccode=rep.focal_b_ccode,
+        partner_ccode=rep.partner_ccode,
+        planted_layer=rep.planted_layer,
+        rank_in_wedge_centroid=rank_centroid,
+        rank_in_wedge_cosine=rank_cosine,
+        wedge_centroid_top=top_c,
+        wedge_centroid_planted=planted_c,
+        n_candidates=n_c,
+    )
+
+
+def run_planted_edge_study(
+    n_replicates: int = 10,
+    n_planted_edges: int = 12,
+    base_seed: int = SEED,
+    num_epochs: int = 50,
+    symmetric_n_edges: int = 5,
+) -> pd.DataFrame:
+    """Run n_replicates each of planted and null. Returns long-form
+    DataFrame ready for top-K recovery aggregation."""
+    rows = []
+    for r in range(n_replicates):
+        for scenario in ("planted", "null"):
+            res = run_planted_edge_replicate(
+                replicate_id=r,
+                scenario=scenario,
+                n_planted_edges=n_planted_edges,
+                seed=base_seed + r,
+                num_epochs=num_epochs,
+                symmetric_n_edges=symmetric_n_edges,
+            )
+            rows.append({
+                "replicate_id": res.replicate_id,
+                "scenario": res.scenario,
+                "rank_centroid": res.rank_in_wedge_centroid,
+                "rank_cosine": res.rank_in_wedge_cosine,
+                "wedge_top_centroid": res.wedge_centroid_top,
+                "wedge_planted_centroid": res.wedge_centroid_planted,
+                "n_candidates": res.n_candidates,
+                "in_top_10_centroid": int(res.rank_in_wedge_centroid <= 10),
+                "in_top_10_cosine": int(res.rank_in_wedge_cosine <= 10),
+            })
+            print(f"  rep {r:2d} {scenario:>7s}: rank_centroid="
+                  f"{res.rank_in_wedge_centroid:>4d}/{res.n_candidates}, "
+                  f"rank_cosine={res.rank_in_wedge_cosine:>4d}, "
+                  f"top_in_10_c={int(res.rank_in_wedge_centroid <= 10)}")
     return pd.DataFrame(rows)

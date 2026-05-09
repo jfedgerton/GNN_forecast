@@ -113,12 +113,20 @@ def fig_planted_feature_recovery(outputs_dir: Path, figures_dir: Path) -> None:
         print(f"  skip planted_feature_recovery: {path} not found")
         return
     df = pd.read_csv(path)
+    # Strip any leading/trailing whitespace from scenario column (defensive)
+    df["scenario"] = df["scenario"].astype(str).str.strip()
     hops = ["hop_0", "hop_1", "hop_2", "hop_3plus"]
     fig, ax = plt.subplots(figsize=(8, 4.5))
     width = 0.35
     x = np.arange(len(hops))
     for i, scenario in enumerate(["planted", "null"]):
-        row = df[df["scenario"] == scenario].iloc[0]
+        sub = df[df["scenario"] == scenario]
+        if sub.empty:
+            print(f"  skip planted_feature_recovery: no rows for scenario={scenario!r} "
+                  f"(have {df['scenario'].unique().tolist()})")
+            plt.close(fig)
+            return
+        row = sub.iloc[0]
         vals = [row[f"mean_{h}_displacement"] for h in hops]
         ax.bar(x + (i - 0.5) * width, vals, width,
                label=f"{scenario} (n={int(row['n_replicates'])})",
@@ -345,18 +353,30 @@ def main() -> None:
     figures_dir.mkdir(parents=True, exist_ok=True)
     print(f"Generating figures in {figures_dir}")
 
-    fig_diagnostic_training(outputs_dir, figures_dir)
-    fig_planted_feature_recovery(outputs_dir, figures_dir)
-    fig_planted_edge_recovery(outputs_dir, figures_dir)
-    fig_regime_shock_cascade(outputs_dir, figures_dir)
-    fig_top_wedge_edges(outputs_dir, figures_dir)
-    fig_layer_wedge_heatmap(outputs_dir, figures_dir)
-    fig_focal_scatter_usa_chn(outputs_dir, figures_dir)
-    fig_joint_interaction(outputs_dir, figures_dir)
-    fig_forecast_baseline(outputs_dir, figures_dir)
-    fig_forecast_scenarios(outputs_dir, figures_dir)
+    figure_fns = [
+        fig_diagnostic_training,
+        fig_planted_feature_recovery,
+        fig_planted_edge_recovery,
+        fig_regime_shock_cascade,
+        fig_top_wedge_edges,
+        fig_layer_wedge_heatmap,
+        fig_focal_scatter_usa_chn,
+        fig_joint_interaction,
+        fig_forecast_baseline,
+        fig_forecast_scenarios,
+    ]
+    n_ok, n_fail = 0, 0
+    import traceback
+    for fn in figure_fns:
+        try:
+            fn(outputs_dir, figures_dir)
+            n_ok += 1
+        except Exception as e:
+            n_fail += 1
+            print(f"  ERROR in {fn.__name__}: {e}")
+            traceback.print_exc(limit=2)
 
-    print("\nDone.")
+    print(f"\nDone. {n_ok} figures generated, {n_fail} errored.")
 
 
 if __name__ == "__main__":

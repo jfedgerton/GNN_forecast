@@ -54,6 +54,12 @@ def main() -> None:
     ap.add_argument("--n-members", type=int, default=10)
     ap.add_argument("--num-epochs", type=int, default=200)
     ap.add_argument("--symmetric-n-edges", type=int, default=5)
+    ap.add_argument("--min-partner-degree", type=int, default=20,
+                    help=("Drop partners with total cross-layer degree below this "
+                          "threshold in the focal year. Filters out Pacific micro-"
+                          "states and other low-degree nodes whose 'add'-edge "
+                          "perturbations produce sparse-layer artifacts rather "
+                          "than substantively meaningful counterfactuals."))
     ap.add_argument("--out-dir", default="outputs/uncertainty")
     args = ap.parse_args()
 
@@ -85,6 +91,49 @@ def main() -> None:
     focal_ccodes = [cc for cc in FOUR_FOCAL_CCODES if cc in dataset.ccode_to_idx]
     print(f"Ensemble: {args.n_members} encoders, focal_ccodes={focal_ccodes}")
 
+    # ---------- substantive-partner filter ----------
+    # Partners with very low total degree (e.g. Pacific micro-states with 0
+    # ties in any layer) produce sparse-layer 'add'-edge artifacts: adding
+    # one tie to an unanchored node creates a large embedding shift simply
+    # because the encoder had no information to anchor that node before. We
+    # restrict the perturbation candidate set to partners with at least
+    # --min-partner-degree total ties across all layers in the focal year.
+    focal_year = dataset.years[-1]
+    snap = dataset.snapshots[focal_year]
+    idx_to_ccode = {v: k for k, v in dataset.ccode_to_idx.items()}
+    degree_total = {cc: 0 for cc in dataset.ccode_to_idx.keys()}
+    for layer_name, ei in snap.edge_indices.items():
+        if not snap.layer_mask.get(layer_name, False):
+            continue
+        if ei.numel() == 0:
+            continue
+        endpoints = ei.flatten().cpu().tolist()
+        for n_idx in endpoints:
+            cc = idx_to_ccode.get(int(n_idx))
+            if cc is not None:
+                degree_total[cc] += 1
+    focal_set = set(focal_ccodes)
+    all_partners = [cc for cc in dataset.ccode_to_idx.keys() if cc not in focal_set]
+    filtered_partners = sorted([
+        cc for cc in all_partners
+        if degree_total[cc] >= args.min_partner_degree
+    ])
+    dropped = sorted([
+        cc for cc in all_partners
+        if degree_total[cc] < args.min_partner_degree
+    ])
+    print(f"Partner filter: {len(filtered_partners)} of {len(all_partners)} "
+          f"partners kept (min_partner_degree={args.min_partner_degree}, "
+          f"focal_year={focal_year})")
+    print(f"  Dropped {len(dropped)} low-degree partners (e.g. "
+          f"{', '.join(str(c) for c in dropped[:8])}{'...' if len(dropped) > 8 else ''})")
+    # Persist the filter audit so the paper can cite it
+    pd.DataFrame([
+        {"ccode": cc, "total_degree_focal_year": degree_total[cc],
+         "kept": int(cc in filtered_partners)}
+        for cc in all_partners
+    ]).to_csv(out_dir / "partner_degree_filter.csv", index=False)
+
     seeds = list(range(SEED, SEED + args.n_members))
     per_seed_sweeps: List[pd.DataFrame] = []
 
@@ -108,6 +157,7 @@ def main() -> None:
         long_df = multi_focal_edge_sweep(
             encoder=encoder, dataset=dataset, feat_set=feat_set,
             focal_ccodes=focal_ccodes,
+            partner_ccodes=filtered_partners,
             symmetric_n_edges=args.symmetric_n_edges,
             progress_every=10_000,
         )

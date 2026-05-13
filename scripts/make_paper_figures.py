@@ -444,6 +444,94 @@ def fig_forecast_scenarios(outputs_dir: Path, figures_dir: Path) -> None:
 # Main
 # ---------------------------------------------------------------
 
+def fig_horizon_decay(outputs_dir: Path, figures_dir: Path) -> None:
+    """Figure 5.1 — walk-forward horizon decay (3-panel: MSE, AUC, centroid drift)."""
+    summary_path = outputs_dir / "walk_forward" / "walk_forward_summary.csv"
+    full_path = outputs_dir / "walk_forward" / "walk_forward_backtest.csv"
+    if not summary_path.exists():
+        print(f"  skip horizon_decay: {summary_path} not found")
+        return
+    summary = pd.read_csv(summary_path)
+    full = pd.read_csv(full_path) if full_path.exists() else None
+
+    # Expected columns in summary: horizon, mean_mse, mean_auc, mean_centroid_drift, n_splits
+    horizons = sorted(summary["horizon"].unique())
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+
+    panels = [
+        ("mean_mse",            "Mean embedding MSE",        "lower right"),
+        ("mean_auc",            "Mean link-prediction AUC",  "upper right"),
+        ("mean_centroid_drift", "Mean centroid drift",       "lower right"),
+    ]
+    for ax, (col, ylab, _) in zip(axes, panels):
+        if col not in summary.columns:
+            ax.text(0.5, 0.5, f"{col}\nnot in summary", ha="center", va="center")
+            ax.set_axis_off(); continue
+        means = summary.set_index("horizon").loc[horizons, col].values
+        ax.plot(horizons, means, marker="o", linewidth=2, color="#1f4e79")
+        # If we have the per-split file, overlay points + min/max envelope
+        if full is not None and col.replace("mean_", "") in full.columns:
+            raw_col = col.replace("mean_", "")
+            for h in horizons:
+                vals = full[full["horizon"] == h][raw_col].dropna().values
+                if len(vals):
+                    ax.scatter([h] * len(vals), vals, s=18, alpha=0.4,
+                               color="#888888", zorder=1)
+        ax.set_xlabel("Forecast horizon\n(years)")
+        ax.set_ylabel(ylab)
+        ax.set_xticks(horizons)
+        ax.grid(True, alpha=0.3)
+    fig.suptitle("Walk-forward backtest: horizon decay")
+    _save(fig, figures_dir / "fig_horizon_decay.png")
+
+
+def fig_ame_vs_gnn(outputs_dir: Path, figures_dir: Path) -> None:
+    """Figure 5.3 — AME-vs-GNN R² alignment by (layer, year)."""
+    align_path = outputs_dir / "ame_baseline" / "ame_vs_gnn_alignment.csv"
+    if not align_path.exists():
+        print(f"  skip ame_vs_gnn: {align_path} not found")
+        return
+    df = pd.read_csv(align_path)
+    if df.empty:
+        print(f"  skip ame_vs_gnn: file is empty"); return
+
+    # Layer order: alliance first (highest R²), then trade-cooperation, then sparse
+    layer_order = ["defensive_alliances", "fta", "pta_services", "cu", "dca"]
+    layers = [l for l in layer_order if l in df["layer"].unique()]
+    years = sorted(df["year"].unique())
+    n_layers, n_years = len(layers), len(years)
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+    bar_w = 0.8 / max(n_years, 1)
+    x = np.arange(n_layers)
+    palette = ["#1f4e79", "#2e7d32", "#c95f00", "#7b1fa2"]
+    for i, yr in enumerate(years):
+        r2_vals = []
+        for layer in layers:
+            sub = df[(df["layer"] == layer) & (df["year"] == yr)]
+            r2_vals.append(float(sub["ame_vs_gnn_r2_mean"].iloc[0]) if len(sub) else np.nan)
+        ax.bar(x + i * bar_w - 0.4 + bar_w / 2, r2_vals, bar_w,
+               label=str(yr), color=palette[i % len(palette)], edgecolor="white")
+
+    # Per-layer mean as black horizontal tick
+    for j, layer in enumerate(layers):
+        layer_mean = df[df["layer"] == layer]["ame_vs_gnn_r2_mean"].mean()
+        ax.hlines(layer_mean, x[j] - 0.4, x[j] + 0.4,
+                  colors="black", linestyles="dashed", linewidth=1.5,
+                  label="Layer mean" if j == 0 else None)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([_two_line(l) for l in layers])
+    ax.set_ylabel(r"$R^{2}$ (AME 2D vs GNN PCA-2D)")
+    ax.set_xlabel("Layer")
+    ax.set_ylim(0, max(0.7, df["ame_vs_gnn_r2_mean"].max() * 1.15))
+    ax.axhline(0, color="grey", linewidth=0.5)
+    ax.set_title("AME bilinear latents vs R-GCN embeddings — per-cell alignment")
+    ax.legend(title="Year", loc="upper right", frameon=True)
+    ax.grid(True, axis="y", alpha=0.3)
+    _save(fig, figures_dir / "fig_ame_vs_gnn.png")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--outputs-dir", default="outputs")
@@ -456,15 +544,17 @@ def main() -> None:
     print(f"Generating figures in {figures_dir}")
 
     figure_fns = [
-        fig_layer_coverage,            # NEW §3 layer-coverage matrix
+        fig_layer_coverage,            # §3 layer-coverage matrix
         fig_diagnostic_training,
+        fig_horizon_decay,             # NEW §5.1 walk-forward horizon decay
         fig_planted_edge_recovery,
-        fig_recovery_distribution,     # NEW §5.2 planted-vs-null distributions
-        fig_top_wedge_edges,
+        fig_recovery_distribution,     # §5.2 planted-vs-null distributions
+        fig_top_wedge_edges,           # §5.2 top significant wedges (post-filter)
+        fig_ame_vs_gnn,                # NEW §5.3 AME-vs-GNN R² alignment
         fig_layer_wedge_heatmap,
         fig_focal_scatter_usa_chn,
         fig_forecast_baseline,
-        fig_edge_forecast_scenarios,   # NEW §6 edge-counterfactual trajectories
+        fig_edge_forecast_scenarios,   # §6 edge-counterfactual trajectories
         # Archived (paper #2): fig_planted_feature_recovery, fig_regime_shock_cascade,
         # fig_joint_interaction, fig_forecast_scenarios
     ]

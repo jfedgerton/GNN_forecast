@@ -27,10 +27,10 @@ for f in "${required[@]}"; do
   if [ ! -f "$f" ]; then
     echo "ERROR: Required input missing: $f"
     echo "Build prerequisite data files first:"
-    echo "  Rscript scripts/export_cow_membership.R"
+    echo "  Rscript scripts/01_export_cow_membership.R"
     echo "  Rscript scripts/export_country_year_features_simple.R 1948 2016"
-    echo "  python scripts/convert_kinne_dca.py"
-    echo "  Rscript scripts/export_usitc_gravity_layers.R"
+    echo "  python scripts/05_convert_kinne_dca.py"
+    echo "  Rscript scripts/04_export_usitc_gravity_layers.R"
     exit 1
   fi
 done
@@ -38,7 +38,7 @@ done
 echo "=== Diagnostic v3: sparse strategic layers + stratified-negatives AUC ==="
 echo "Start: $(date)"
 
-python scripts/run_diagnostic_v3.py \
+python scripts/06_run_diagnostic_v3.py \
     --data-dir data/processed \
     --cow-membership data/processed/cow_state_membership.csv \
     --node-features data/processed/node_features.csv \

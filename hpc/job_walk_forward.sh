@@ -15,7 +15,7 @@ module purge
 module load python/3.11.2 cuda/12.6.0 r/4.3.1
 source .venv/bin/activate
 
-PYTHONPATH=src python scripts/run_walk_forward.py \
+PYTHONPATH=src python scripts/08_run_walk_forward.py \
     --data-dir data/processed \
     --split-years 1985 1990 1995 2000 2005 \
     --horizons 5 10 15 20 \

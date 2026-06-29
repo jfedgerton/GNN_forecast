@@ -34,7 +34,7 @@ Rscript -e 'suppressPackageStartupMessages(library(usitcgravity)); cat("usitcgra
   || { echo "usitcgravity failed to load. Aborting."; exit 1; }
 
 echo "=== Running export script ==="
-Rscript scripts/export_usitc_gravity_layers.R 1948 2016
+Rscript scripts/04_export_usitc_gravity_layers.R 1948 2016
 
 echo "=== Done. Layer inventory: ==="
 ls -la data/processed/layer_*.csv

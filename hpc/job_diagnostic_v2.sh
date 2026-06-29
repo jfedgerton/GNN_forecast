@@ -22,7 +22,7 @@ echo "Start: $(date)"
 # Confirm the node features file exists
 if [ ! -f data/processed/node_features.csv ]; then
   echo "ERROR: data/processed/node_features.csv missing."
-  echo "Run scripts/export_country_year_features.R first to build it."
+  echo "Run scripts/02_export_country_year_features.R first to build it."
   exit 1
 fi
 

@@ -40,7 +40,7 @@ fi
 echo "================================================================"
 echo "1) Planted-edge SBM validation (10x{planted, null})"
 echo "================================================================"
-PYTHONPATH=src python scripts/run_planted_edge_simulation.py \
+PYTHONPATH=src python scripts/09_run_planted_edge_simulation.py \
     --n-replicates 10 --n-planted-edges 12 \
     --out-dir outputs/regime_shock_simulation
 
@@ -48,7 +48,7 @@ echo ""
 echo "================================================================"
 echo "2) Joint Polity+edge intervention (4 focal scenarios)"
 echo "================================================================"
-PYTHONPATH=src python scripts/run_joint_intervention.py \
+PYTHONPATH=src python scripts/13_run_joint_intervention.py \
     --encoder "$ENCODER" \
     --data-dir data/processed \
     --out-dir outputs/joint_intervention
@@ -57,7 +57,7 @@ echo ""
 echo "================================================================"
 echo "3) Train GRU temporal head"
 echo "================================================================"
-PYTHONPATH=src python scripts/train_gru_v3.py \
+PYTHONPATH=src python scripts/07_train_gru_v3.py \
     --encoder "$ENCODER" \
     --data-dir data/processed \
     --out-dir outputs/forecast \
@@ -78,7 +78,7 @@ echo ""
 echo "================================================================"
 echo "5) Generate paper figures"
 echo "================================================================"
-PYTHONPATH=src python scripts/make_paper_figures.py \
+PYTHONPATH=src python scripts/16_make_paper_figures.py \
     --outputs-dir outputs --figures-dir outputs/figures
 
 echo ""

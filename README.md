@@ -15,7 +15,7 @@ This repository now includes a full research scaffold for your idea:
 
 ## Repository Structure
 
-- `scripts/export_peacesciencer_layers.R`: Exports node and layer CSVs from peacesciencer.
+- `scripts/03_export_peacesciencer_layers.R`: Exports node and layer CSVs from peacesciencer.
 - `scripts/run_research_pipeline.py`: Builds observed/residual layers by year and exports model inputs.
 - `scripts/train_forecast_and_intervene.py`: Forecast scaffold (2026–2050) + intervention analysis.
 - `src/gnn_forecast/data_peacesciencer.py`: Loader for exported peacesciencer files.
@@ -29,7 +29,7 @@ This repository now includes a full research scaffold for your idea:
 ## 1) Export layers from peacesciencer (R)
 
 ```bash
-Rscript scripts/export_peacesciencer_layers.R
+Rscript scripts/03_export_peacesciencer_layers.R
 ```
 
 This writes:

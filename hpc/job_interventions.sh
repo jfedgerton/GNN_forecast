@@ -37,7 +37,7 @@ fi
 echo "================================================================"
 echo "1) Multi-focal edge sweep (USA/CHN/RUS/IND)"
 echo "================================================================"
-PYTHONPATH=src python scripts/run_multi_focal_edge_sweep.py \
+PYTHONPATH=src python scripts/12_run_multi_focal_edge_sweep.py \
     --encoder "$ENCODER" \
     --data-dir data/processed \
     --out-dir outputs/multi_focal_edge \

@@ -25,6 +25,6 @@ module load r/4.3.1
 echo "=== Exporting peacesciencer layers ==="
 echo "Start: $(date)"
 
-Rscript scripts/export_peacesciencer_layers.R
+Rscript scripts/03_export_peacesciencer_layers.R
 
 echo "Done: $(date)"

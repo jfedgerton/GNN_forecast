@@ -46,7 +46,7 @@ PYTHONPATH=src pytest tests/ -v
 
 ## Pipeline
 
-1. **Export data (R):** `Rscript scripts/export_peacesciencer_layers.R`
+1. **Export data (R):** `Rscript scripts/03_export_peacesciencer_layers.R`
 2. **Build layers (Python):** `PYTHONPATH=src python scripts/run_research_pipeline.py --data-dir data/processed --start-year 1945 --end-year 2025 --out-dir data/model_inputs`
 3. **Train & forecast (Python):** `PYTHONPATH=src python scripts/train_forecast_and_intervene.py --embedding-file embedding_history.pt --adj-file adjacency_2025.npy --nodes-file data/processed/nodes.csv --out-dir outputs`
 

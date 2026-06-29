@@ -15,7 +15,7 @@ module purge
 module load python/3.11.2 cuda/12.6.0 r/4.3.1
 source .venv/bin/activate
 
-PYTHONPATH=src python scripts/run_ensemble_uq.py \
+PYTHONPATH=src python scripts/14_run_ensemble_uq.py \
     --data-dir data/processed \
     --n-members 10 \
     --num-epochs 200 \

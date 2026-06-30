@@ -62,20 +62,90 @@ if (!requireNamespace("usitcgravity", quietly = TRUE)) {
                           lib = user_lib)
 }
 
+# Load only DBI + countrycode here. We deliberately DO NOT call
+# `library(usitcgravity)` — its `.onAttach` startup runs an "is the database
+# OK?" check that opens a duckdb handle to the database file and never
+# fully releases it. Because duckdb's R bindings keep a process-wide pool
+# of database handles keyed by file path, that lingering handle poisons
+# every subsequent open of the same file in this R session — our later
+# `DBI::dbConnect()` returns a connection that errors out on the first
+# query with "Invalid connection / Context: rapi_prepare".
+#
+# We only need usitcgravity for the initial download. Once the .sql file
+# is on disk, we can talk to it directly with the duckdb driver and skip
+# the package entirely.
 suppressPackageStartupMessages({
-  library(usitcgravity)
   library(countrycode)
   library(DBI)
+  library(duckdb)   # MUST be attached, not just `duckdb::` — otherwise S4
+                    # dispatch for dbConnect routes to the wrong method and
+                    # the connection silently fails on the first query.
 })
 
+# ---- Resolve the expected duckdb file path -----------------------------
+usitc_dir <- Sys.getenv("USITCGRAVITY_DIR")
+if (nchar(usitc_dir) == 0) {
+  # tools::R_user_dir() defaults to which = "data"; the package uses no `which` arg
+  usitc_dir <- tools::R_user_dir("usitcgravity")
+}
+usitc_dir <- gsub("\\\\", "/", usitc_dir)
+duckdb_ver <- gsub("\\.", "", utils::packageVersion("duckdb"))
+duckdb_path <- paste0(usitc_dir, "/usitcgravity_duckdb_v", duckdb_ver, ".sql")
+
 # ---- Make sure the duckdb file is present ------------------------------
-cat("=== Ensuring usitcgravity database is downloaded (~810 MB, one-time) ===\n")
-usitcgravity_download()
+if (file.exists(duckdb_path)) {
+  cat("=== usitcgravity duckdb already present, skipping download ===\n")
+} else {
+  cat("=== Downloading usitcgravity database (~810 MB, one-time) ===\n")
+  # IMPORTANT: download in a separate, throwaway R process. The download
+  # routine attaches the package and opens its own duckdb handles, which
+  # would poison this process's handle pool. Running it via Rscript -e in
+  # a child process keeps our session clean.
+  rscript <- file.path(R.home("bin"), "Rscript")
+  args <- c("--vanilla", "-e",
+            "usitcgravity::usitcgravity_download()")
+  status <- system2(rscript, args)
+  if (status != 0) {
+    stop("usitcgravity_download() failed in child process (exit ", status, ")")
+  }
+  if (!file.exists(duckdb_path)) {
+    stop("download finished but expected file is missing: ", duckdb_path)
+  }
+}
 
 # ---- Connect and inspect schema ----------------------------------------
+# NOTE: we deliberately bypass usitcgravity_connect(). The wrapper creates
+# the duckdb driver as a local variable and only caches the connection;
+# once the function returns, the driver is GC'd and duckdb's finalizer
+# invalidates the connection. We replicate the path logic and keep `drv`
+# alive at the top level so its lifetime brackets the connection's.
 cat("=== Connecting to usitcgravity duckdb ===\n")
-con <- usitcgravity_connect()
-on.exit(tryCatch(usitcgravity_disconnect(con), error = function(e) NULL))
+if (!file.exists(duckdb_path)) {
+  candidates <- list.files(usitc_dir, pattern = "^usitcgravity_duckdb_v.*\\.sql$",
+                           full.names = TRUE)
+  if (length(candidates) == 0) {
+    stop("usitcgravity duckdb file not found under ", usitc_dir,
+         " (looked for usitcgravity_duckdb_v", duckdb_ver, ".sql).",
+         "\nTry re-running usitcgravity::usitcgravity_download().")
+  }
+  duckdb_path <- candidates[1]
+  cat("  NOTE: expected v", duckdb_ver, " not found; using ",
+      basename(duckdb_path), "\n", sep = "")
+}
+cat("  duckdb file:", duckdb_path, "\n")
+
+# Use the canonical dbConnect form: pass an anonymous driver and the dbdir /
+# read_only as dbConnect args. The alternate form
+#   drv <- duckdb::duckdb(db_file, read_only = TRUE); con <- DBI::dbConnect(drv)
+# is what usitcgravity_connect() uses internally and triggers a bug in
+# duckdb 1.5.2 where the resulting connection reports dbIsValid() == TRUE but
+# any query fails with "Invalid connection / Context: rapi_prepare".
+con <- DBI::dbConnect(
+  duckdb::duckdb(),
+  dbdir     = duckdb_path,
+  read_only = TRUE
+)
+on.exit(tryCatch(DBI::dbDisconnect(con, shutdown = TRUE), error = function(e) NULL))
 
 tbls <- DBI::dbListTables(con)
 cat("  tables:", paste(tbls, collapse = ", "), "\n")
@@ -127,7 +197,7 @@ dgd <- DBI::dbGetQuery(con, sql)
 cat("  rows pulled:", nrow(dgd), "\n")
 
 # Disconnect now - rest of work is in-memory
-usitcgravity_disconnect(con)
+DBI::dbDisconnect(con, shutdown = TRUE)
 on.exit()
 
 # ---- Map ISO3 -> COW ccode ---------------------------------------------
@@ -169,22 +239,38 @@ if (length(orphans) > 0) {
 }
 
 # ---- Helper to write one layer CSV -------------------------------------
+# Output convention matches the existing alliance / IGO / trade layers:
+#   - one row per *undirected* dyad-year (canonical: source_ccode < target_ccode)
+#   - tie = OR over the two directions in the source DGD (i.e. an agreement
+#     reported either way collapses to a single undirected tie)
+#   - unquoted CSV header, no row names
 write_layer <- function(dgd_df, var, out_path) {
   if (!var %in% names(dgd_df)) {
     cat("  SKIP", var, "(column not present)\n")
     return(invisible(NULL))
   }
+  a   <- as.integer(dgd_df$source_ccode)
+  b   <- as.integer(dgd_df$target_ccode)
+  tie <- as.integer(ifelse(is.na(dgd_df[[var]]), 0, dgd_df[[var]]))
   out <- data.frame(
     year         = as.integer(dgd_df$year),
-    source_ccode = as.integer(dgd_df$source_ccode),
-    target_ccode = as.integer(dgd_df$target_ccode),
-    tie          = as.integer(ifelse(is.na(dgd_df[[var]]), 0, dgd_df[[var]]))
+    source_ccode = pmin(a, b),
+    target_ccode = pmax(a, b),
+    tie          = tie
   )
-  out <- out[!duplicated(out[, c("year", "source_ccode", "target_ccode")]), ]
+  # Aggregate (A,B) and (B,A) into one undirected row via OR over `tie`.
+  # tapply on the dyad-year key + max() is fast and avoids a full aggregate().
+  key <- paste(out$year, out$source_ccode, out$target_ccode, sep = "_")
+  agg_tie <- tapply(out$tie, key, max, default = 0L)
+  unique_idx <- !duplicated(key)
+  out <- out[unique_idx, ]
+  out$tie <- as.integer(agg_tie[paste(out$year, out$source_ccode,
+                                      out$target_ccode, sep = "_")])
   out <- out[order(out$year, out$source_ccode, out$target_ccode), ]
-  write.csv(out, out_path, row.names = FALSE)
+  # quote = FALSE matches the unquoted header style of the existing layer CSVs.
+  write.csv(out, out_path, row.names = FALSE, quote = FALSE)
   pos <- sum(out$tie == 1)
-  cat("  wrote", basename(out_path), "-", nrow(out), "rows,",
+  cat("  wrote", basename(out_path), "-", nrow(out), "undirected dyad-years,",
       pos, "ties (", round(100 * pos / nrow(out), 2), "% density)\n")
 }
 
